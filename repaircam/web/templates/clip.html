@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}{{ recording.title }} — RepairCam{% endblock %}
+
+{% block content %}
+<h1>{{ recording.title }}</h1>
+<p class="muted">
+  {{ recording.work_center }} &middot; {{ recording.duration_hms }} &middot; {{ recording.size_mb }} MB
+  &middot; {{ recording.started_at.replace('T', ' ')[:19] }} UTC
+  {% if recording.segments > 1 %} &middot; joined from {{ recording.segments }} segments{% endif %}
+</p>
+
+{% if exists %}
+  <video class="player" controls preload="metadata"
+         src="{{ url_for('repaircam.clip_video', recording_id=recording.id) }}"></video>
+{% else %}
+  <div class="flash flash-error">
+    The video file is missing from disk: <code>{{ recording.path }}</code>
+  </div>
+{% endif %}
+
+<div class="two-col">
+  <section>
+    <h2 class="section">Job details</h2>
+    <form method="post" action="{{ url_for('repaircam.clip_labels', recording_id=recording.id) }}">
+      <label>Job / MO number
+        <input name="mo_name" value="{{ recording.labels.mo_name }}" placeholder="WH/MO/00042">
+      </label>
+      <label>Operation
+        <input name="operation" value="{{ recording.labels.operation }}">
+      </label>
+      <div class="row">
+        <label>Device<input name="device" value="{{ recording.labels.device }}"></label>
+        <label>IMEI<input name="imei" value="{{ recording.labels.imei }}" inputmode="numeric"></label>
+      </div>
+      <label>Technician<input name="technician" value="{{ recording.labels.technician }}"></label>
+      <label>Note<input name="notes" value="{{ recording.labels.notes }}"></label>
+      <button class="btn btn-start">Save job details</button>
+    </form>
+  </section>
+
+  <section>
+    <h2 class="section">File</h2>
+    <dl class="facts">
+      <dt>Video</dt><dd>{{ recording.video_codec or '?' }}
+        {{ recording.width or '?' }}&times;{{ recording.height or '?' }}
+        @ {{ recording.frame_rate or '?' }} fps</dd>
+      <dt>Audio</dt><dd>{{ recording.audio_codec or 'none' }}</dd>
+      <dt>Camera</dt><dd>{{ recording.camera_name or '—' }}</dd>
+      <dt>Path</dt><dd><code>{{ recording.path }}</code></dd>
+    </dl>
+    <p>
+      <a class="btn btn-quiet" href="{{ url_for('repaircam.clip_download', recording_id=recording.id) }}">Download clip</a>
+      {% if sidecar %}
+      <a class="btn btn-quiet" href="{{ url_for('repaircam.clip_sidecar', recording_id=recording.id) }}">Sidecar JSON</a>
+      {% endif %}
+    </p>
+    <p class="muted small">
+      The sidecar JSON travels with the clip and describes it on its own — that is what
+      makes the archive usable as a training dataset later.
+    </p>
+  </section>
+</div>
+
+<p><a href="{{ url_for('repaircam.library') }}">&larr; Back to the library</a></p>
+{% endblock %}

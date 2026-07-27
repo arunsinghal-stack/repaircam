@@ -1,0 +1,34 @@
+# RepairCam camera map — copy this file to cameras.yaml and edit it.
+#
+#     cp repaircam/cameras.example.yaml repaircam/cameras.yaml
+#
+# cameras.yaml holds real passwords and is gitignored. NEVER commit it.
+#
+# Rule: 1 Work Center = 1 bench = 1 camera. The key (WC1, WC2, ...) must match
+# the Work Center code in Odoo, because that is what ties a clip to its job.
+
+cameras:
+  WC2:
+    name: "Bench 2 — main repair table"
+    model: "TP-Link VIGI C540V"
+    host: "192.168.0.133"        # the camera's IP on the shop LAN
+    username: "admin"
+    password: "CHANGE-ME"        # the password you set in the VIGI app
+    port: 554
+
+    # VIGI stream paths. stream1 = full quality (recorded),
+    # stream2 = low quality (live preview + snapshots).
+    main_path: "/stream1"
+    sub_path: "/stream2"
+
+    # VIGI cameras send pcm_alaw audio, which MP4 cannot hold, so RepairCam
+    # transcodes just the audio to AAC. Set false to record video only.
+    has_audio: true
+
+    notes: "Bitrate capped at 4096 kbps in the VIGI app."
+
+  # Add the next bench by copying the block above:
+  # WC3:
+  #   name: "Bench 3"
+  #   host: "192.168.0.134"
+  #   password: "CHANGE-ME"

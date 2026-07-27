@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Library — RepairCam{% endblock %}
+
+{% block content %}
+<h1>Library</h1>
+<p class="muted">{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB
+{% if stats.unlabelled %} &middot; <b class="warn-text">{{ stats.unlabelled }} without a job label</b>{% endif %}
+</p>
+
+<form class="filters" method="get">
+  <input type="search" name="q" value="{{ query }}" placeholder="Search MO, device, IMEI, technician…">
+  <select name="work_center">
+    <option value="">All benches</option>
+    {% for wc in cameras %}
+      <option value="{{ wc }}" {{ 'selected' if wc == work_center else '' }}>{{ wc }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn btn-quiet">Search</button>
+</form>
+
+{% if recordings %}
+<table class="table">
+  <thead>
+    <tr><th>Job</th><th>Bench</th><th>Device</th><th>Length</th><th>Size</th><th>Recorded</th></tr>
+  </thead>
+  <tbody>
+    {% for r in recordings %}
+    <tr>
+      <td>
+        <a href="{{ url_for('repaircam.clip', recording_id=r.id) }}">{{ r.title }}</a>
+        {% if r.labels.is_empty %}<span class="pill warn">no label</span>{% endif %}
+      </td>
+      <td class="muted">{{ r.work_center }}</td>
+      <td class="muted">{{ r.labels.device or '—' }}</td>
+      <td class="muted">{{ r.duration_hms }}</td>
+      <td class="muted">{{ r.size_mb }} MB</td>
+      <td class="muted">{{ r.started_at.replace('T', ' ')[:16] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="pager">
+  {% if page > 1 %}
+    <a class="btn btn-quiet" href="{{ url_for('repaircam.library', page=page-1, q=query, work_center=work_center) }}">Newer</a>
+  {% endif %}
+  {% if has_next %}
+    <a class="btn btn-quiet" href="{{ url_for('repaircam.library', page=page+1, q=query, work_center=work_center) }}">Older</a>
+  {% endif %}
+</div>
+{% else %}
+<p class="muted">Nothing matches. {% if query or work_center %}<a href="{{ url_for('repaircam.library') }}">Clear the filters</a>.{% endif %}</p>
+{% endif %}
+{% endblock %}

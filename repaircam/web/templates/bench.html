@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+{% block title %}{{ camera.work_center }} — RepairCam{% endblock %}
+
+{% block content %}
+<h1>{{ camera.work_center }} <span class="muted">{{ camera.name }}</span></h1>
+
+<div class="bench-layout">
+  <section class="preview-panel">
+    <div class="preview">
+      <img id="preview" src="{{ url_for('repaircam.bench_preview', work_center=camera.work_center) }}"
+           alt="Live view of {{ camera.name }}">
+      <div class="preview-overlay">
+        <span class="rec-dot state-{{ status.state }}"></span>
+        <span data-field="state">{{ status.state }}</span>
+        <span class="timer-inline" data-field="elapsed">{{ status.elapsed_hms }}</span>
+      </div>
+    </div>
+    <p class="muted small">
+      Live view uses the low-quality stream so it never slows the recording.
+      If it stays black, <a href="{{ url_for('repaircam.bench_snapshot', work_center=camera.work_center) }}">
+      take a still</a> to test the camera.
+    </p>
+  </section>
+
+  <section class="control-panel">
+    <form method="post" id="job-form"
+          action="{{ url_for('repaircam.bench_start', work_center=camera.work_center) }}">
+      <fieldset {{ 'disabled' if status.busy and status.labels.mo_name else '' }}>
+        <legend>What is being repaired</legend>
+        <label>Job / MO number
+          <input name="mo_name" value="{{ status.labels.mo_name }}" placeholder="WH/MO/00042"
+                 autocomplete="off">
+        </label>
+        <label>Operation
+          <input name="operation" value="{{ status.labels.operation }}"
+                 placeholder="Screen replacement" autocomplete="off">
+        </label>
+        <div class="row">
+          <label>Device
+            <input name="device" value="{{ status.labels.device }}" placeholder="Redmi Note 12"
+                   autocomplete="off">
+          </label>
+          <label>IMEI
+            <input name="imei" value="{{ status.labels.imei }}" placeholder="35xxxxxxxxxxxxx"
+                   inputmode="numeric" autocomplete="off">
+          </label>
+        </div>
+        <label>Technician
+          <input name="technician" value="{{ status.labels.technician }}" autocomplete="off">
+        </label>
+        <label>Note
+          <input name="notes" value="{{ status.labels.notes }}" autocomplete="off">
+        </label>
+      </fieldset>
+
+      <div class="buttons">
+        {% if status.recording %}
+          <button class="btn btn-stop" formmethod="post"
+                  formaction="{{ url_for('repaircam.bench_stop', work_center=camera.work_center) }}">
+            Pause
+          </button>
+        {% else %}
+          <button class="btn btn-start" type="submit">
+            {{ 'Continue' if status.busy else 'Start recording' }}
+          </button>
+        {% endif %}
+
+        <button class="btn btn-done" {{ '' if status.busy else 'disabled' }}
+                formaction="{{ url_for('repaircam.bench_done', work_center=camera.work_center) }}">
+          Done — save clip
+        </button>
+      </div>
+
+      {% if status.busy %}
+      <p class="muted small">
+        {{ status.segments }} segment{{ '' if status.segments == 1 else 's' }} recorded so far.
+        Pause and Continue as often as you need; <b>Done</b> joins them into one clip for this operation.
+      </p>
+      {% endif %}
+    </form>
+
+    {% if status.busy %}
+    <form method="post" action="{{ url_for('repaircam.bench_cancel', work_center=camera.work_center) }}"
+          onsubmit="return confirm('Throw away this recording? The footage cannot be recovered.');">
+      <button class="btn btn-quiet">Discard this recording</button>
+    </form>
+    {% endif %}
+
+    {% if status.last_error %}
+      <div class="flash flash-error">{{ status.last_error }}</div>
+    {% endif %}
+  </section>
+</div>
+
+<div class="two-col">
+  {% if recent %}
+  <section>
+    <h2 class="section">Last clips from this bench</h2>
+    <table class="table">
+      <tbody>
+      {% for r in recent %}
+        <tr>
+          <td><a href="{{ url_for('repaircam.clip', recording_id=r.id) }}">{{ r.title }}</a></td>
+          <td class="muted">{{ r.duration_hms }}</td>
+          <td class="muted">{{ r.started_at.replace('T', ' ')[:16] }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if events %}
+  <section>
+    <h2 class="section">Activity</h2>
+    <ul class="events">
+      {% for e in events %}
+        <li><span class="kind kind-{{ e.kind }}">{{ e.kind }}</span>
+            <span class="muted">{{ e.ts.replace('T', ' ')[:19] }}</span>
+            {{ e.detail }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  var bench = {{ camera.work_center | tojson }};
+  var wasBusy = {{ status.busy | tojson }};
+
+  RepairCam.pollStatus(function (data) {
+    var status = data.benches[bench];
+    if (!status) return;
+    RepairCam.setField(document, 'state', status.state);
+    RepairCam.setField(document, 'elapsed', status.elapsed_hms);
+    var dot = document.querySelector('.rec-dot');
+    if (dot) dot.className = 'rec-dot state-' + status.state;
+
+    // The camera can drop out on its own; reload so the buttons match reality.
+    if (wasBusy !== status.busy) window.location.reload();
+  });
+
+  // A dead MJPEG stream shows as a broken image. Retry it rather than leaving
+  // the technician staring at a blank box.
+  RepairCam.keepPreviewAlive('preview');
+</script>
+{% endblock %}
