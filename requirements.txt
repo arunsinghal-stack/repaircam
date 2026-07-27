@@ -1,0 +1,8 @@
+# RepairCam recorder dependencies.
+# Install with:  python3 -m pip install -r requirements.txt
+#
+# Everything else (recording, concat, snapshots) is done by the ffmpeg binary,
+# which is installed with apt, not pip:  sudo apt install ffmpeg
+
+PyYAML>=6.0          # reads repaircam/cameras.yaml
+Flask>=3.0           # Phase 2 web UI

@@ -1,0 +1,340 @@
+"""RepairCam command line — the bench-proof and troubleshooting tool.
+
+The web UI is what technicians use. This is what you use over SSH when
+something is wrong, and what proved the camera works in Phase 0:
+
+    python3 -m repaircam.cli record WC2 --duration 20
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import shutil
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+from . import __version__, config, ffmpeg
+from .backends import CaptureError, build_backend
+from .catalogue import Catalogue, JobLabels
+from .config import ConfigError
+from .recorder import Recorder, RecorderError
+
+log = logging.getLogger("repaircam")
+
+OK = "OK  "
+BAD = "FAIL"
+
+
+def _setup_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-7s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+def _labels_from_args(args: argparse.Namespace) -> JobLabels:
+    return JobLabels(
+        mo_name=getattr(args, "mo", "") or "",
+        operation=getattr(args, "operation", "") or "",
+        device=getattr(args, "device", "") or "",
+        imei=getattr(args, "imei", "") or "",
+        technician=getattr(args, "technician", "") or "",
+        notes=getattr(args, "note", "") or "",
+    )
+
+
+def _add_label_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("job labels (what the clip is about)")
+    group.add_argument("--mo", help="Odoo Manufacturing Order, e.g. WH/MO/00042")
+    group.add_argument("--operation", help="operation name, e.g. 'Screen replacement'")
+    group.add_argument("--device", help="device model, e.g. 'Redmi Note 12'")
+    group.add_argument("--imei", help="device IMEI")
+    group.add_argument("--technician", help="who is doing the work")
+    group.add_argument("--note", help="free-text note")
+
+
+# --------------------------------------------------------------------------
+# commands
+# --------------------------------------------------------------------------
+
+
+def cmd_cameras(args: argparse.Namespace) -> int:
+    """List configured benches, and optionally test each camera."""
+    cameras = config.load_cameras()
+    print(f"{len(cameras)} bench(es) configured in {config.cameras_file()}\n")
+    for work_center, camera in sorted(cameras.items()):
+        print(f"  {work_center:<6} {camera.name}")
+        print(f"         {camera.model or 'camera'} at {camera.host} via {camera.backend}")
+        print(f"         record: {camera.safe_main_url}")
+        print(f"         preview: {camera.safe_sub_url}")
+        if args.check:
+            ok, message = build_backend(camera).check()
+            print(f"         {OK if ok else BAD} {message}")
+        print()
+    return 0
+
+
+def cmd_record(args: argparse.Namespace) -> int:
+    """Record one clip from one bench."""
+    recorder = Recorder(args.work_center)
+    labels = _labels_from_args(args)
+
+    if args.duration:
+        print(f"Recording {args.work_center} for {args.duration:g}s — Ctrl-C to stop early.")
+        recording = recorder.record_once(args.duration, labels)
+    else:
+        print(f"Recording {args.work_center}. Press Ctrl-C to stop and save.")
+        recorder.start(labels)
+        try:
+            while recorder.state.value == "recording":
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            print("\nStopping...")
+        recording = recorder.done()
+
+    print(f"\n{OK} saved {recording.duration_hms}  ({recording.size_mb} MB)")
+    print(f"     clip:    {recording.absolute_path()}")
+    print(f"     sidecar: {config.data_dir() / recording.sidecar_path}")
+    print(f"     id:      {recording.id}")
+    if recording.labels.is_empty:
+        print("     note: this clip has no job labels — tag it in the web UI (Library).")
+    return 0
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    """Grab one still — this is the focus test.
+
+    Point the camera at a real phone at 60–80 cm, take a snapshot, open it, and
+    check that the screen and screws are sharp.
+    """
+    camera = config.get_camera(args.work_center)
+    backend = build_backend(camera)
+    dest = Path(args.output) if args.output else None
+    if dest is None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        dest = config.ensure_data_dirs()["snapshots"] / f"{args.work_center}_{stamp}.jpg"
+
+    backend.snapshot(dest)
+    size_kb = round(dest.stat().st_size / 1024)
+    print(f"{OK} snapshot saved: {dest}  ({size_kb} KB)")
+    print("     Open it and check a phone at 60-80 cm is sharp (screws readable).")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """Show what has been recorded."""
+    catalogue = Catalogue()
+    recordings = catalogue.list(
+        work_center=args.work_center, mo_name=args.mo, imei=args.imei,
+        search=args.search, limit=args.limit,
+    )
+    if not recordings:
+        print("No recordings yet.")
+        return 0
+
+    print(f"{'ID':>4}  {'BENCH':<6} {'WHEN':<20} {'LENGTH':>8} {'SIZE':>8}  JOB")
+    for recording in recordings:
+        when = recording.started_at.replace("T", " ")[:19]
+        job = recording.title
+        if recording.labels.device:
+            job += f"  [{recording.labels.device}]"
+        print(
+            f"{recording.id:>4}  {recording.work_center:<6} {when:<20} "
+            f"{recording.duration_hms:>8} {recording.size_mb:>7.1f}M  {job}"
+        )
+    stats = catalogue.stats()
+    print(f"\n{stats['clips']} clips, {stats['hours']}h, {stats['gigabytes']} GB total")
+    if stats["unlabelled"]:
+        print(f"{stats['unlabelled']} clip(s) have no job label yet.")
+    return 0
+
+
+def cmd_info(args: argparse.Namespace) -> int:
+    """Everything known about one clip."""
+    recording = Catalogue().get(args.id)
+    if recording is None:
+        print(f"No recording with id {args.id}.", file=sys.stderr)
+        return 1
+
+    path = recording.absolute_path()
+    print(f"Recording {recording.id}")
+    print(f"  bench      {recording.work_center}  ({recording.camera_name})")
+    print(f"  started    {recording.started_at}")
+    print(f"  length     {recording.duration_hms}  ({recording.segments} segment(s))")
+    print(f"  size       {recording.size_mb} MB")
+    print(f"  video      {recording.video_codec} {recording.width}x{recording.height}"
+          f" @ {recording.frame_rate or '?'} fps")
+    print(f"  audio      {recording.audio_codec or 'none'}")
+    print(f"  file       {path}{'' if path.exists() else '   *** MISSING ***'}")
+    print("  job labels:")
+    for key, value in recording.labels.as_dict().items():
+        print(f"    {key:<12} {value or '-'}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Is this box healthy enough to record? Checks tools, disk and cameras."""
+    print("RepairCam status\n")
+
+    print(f"  version      {__version__}")
+    binary = shutil.which("ffmpeg")
+    print(f"  {OK if binary else BAD} ffmpeg    {ffmpeg.version() or 'NOT INSTALLED — sudo apt install ffmpeg'}")
+
+    root = config.data_dir()
+    print(f"  data dir     {root}{'' if root.exists() else '  (will be created)'}")
+    if root.exists():
+        usage = shutil.disk_usage(root)
+        free_gb = usage.free / 1_073_741_824
+        # ~4 Mbps copied stream is roughly 1.8 GB/hour per bench.
+        hours = free_gb / 1.8
+        marker = OK if free_gb > 20 else BAD
+        print(f"  {marker} disk      {free_gb:.1f} GB free  (~{hours:.0f} bench-hours)")
+
+    catalogue = Catalogue()
+    stats = catalogue.stats()
+    print(f"  catalogue    {stats['clips']} clips, {stats['hours']}h, {stats['gigabytes']} GB"
+          f", {stats['today']} today")
+
+    print("\n  cameras:")
+    try:
+        cameras = config.load_cameras()
+    except ConfigError as exc:
+        print(f"  {BAD} {exc}")
+        return 1
+
+    failures = 0
+    for work_center, camera in sorted(cameras.items()):
+        if args.quick:
+            print(f"    {work_center:<6} {camera.name} at {camera.host}")
+            continue
+        ok, message = build_backend(camera).check()
+        failures += 0 if ok else 1
+        print(f"    {OK if ok else BAD} {work_center:<6} {camera.name:<28} {message}")
+
+    return 1 if failures else 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    """Start the web UI that technicians use."""
+    try:
+        from .web import create_app
+    except ImportError as exc:
+        print(f"Flask is not installed: {exc}\n  python3 -m pip install -r requirements.txt",
+              file=sys.stderr)
+        return 1
+
+    app = create_app()
+    print(f"RepairCam web UI: http://{args.host}:{args.port}")
+    print("On another device on the shop network, use this box's IP instead of 0.0.0.0.")
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
+    return 0
+
+
+def cmd_relabel(args: argparse.Namespace) -> int:
+    """Attach or correct the job labels on an existing clip."""
+    catalogue = Catalogue()
+    recording = catalogue.get(args.id)
+    if recording is None:
+        print(f"No recording with id {args.id}.", file=sys.stderr)
+        return 1
+
+    labels = recording.labels
+    for field_name in ("mo", "operation", "device", "imei", "technician", "note"):
+        value = getattr(args, field_name, None)
+        if value is not None:
+            setattr(labels, {"mo": "mo_name", "note": "notes"}.get(field_name, field_name), value)
+
+    catalogue.update_labels(args.id, labels)
+    print(f"{OK} recording {args.id} relabelled: {labels.mo_name or '(no MO)'}")
+    print("     Note: the sidecar JSON keeps its original labels; the catalogue is now the truth.")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# entry point
+# --------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python3 -m repaircam.cli",
+        description="RepairCam — record repair work at the bench.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Common uses:\n"
+            "  python3 -m repaircam.cli status              is everything healthy?\n"
+            "  python3 -m repaircam.cli snapshot WC2        focus test\n"
+            "  python3 -m repaircam.cli record WC2 --duration 20\n"
+            "  python3 -m repaircam.cli web                 start the UI for technicians\n"
+        ),
+    )
+    parser.add_argument("--version", action="version", version=f"RepairCam {__version__}")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show debug logging")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("cameras", help="list configured benches")
+    p.add_argument("--check", action="store_true", help="also test each camera is reachable")
+    p.set_defaults(func=cmd_cameras)
+
+    p = sub.add_parser("record", help="record a clip from one bench")
+    p.add_argument("work_center", help="bench code, e.g. WC2")
+    p.add_argument("--duration", type=float, help="seconds to record (default: until Ctrl-C)")
+    _add_label_arguments(p)
+    p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser("snapshot", help="grab one still image (the focus test)")
+    p.add_argument("work_center")
+    p.add_argument("-o", "--output", help="where to write the JPEG")
+    p.set_defaults(func=cmd_snapshot)
+
+    p = sub.add_parser("list", help="list recorded clips")
+    p.add_argument("--work-center", help="only this bench")
+    p.add_argument("--mo", help="only this Manufacturing Order")
+    p.add_argument("--imei", help="only this device")
+    p.add_argument("--search", help="free-text search over labels")
+    p.add_argument("--limit", type=int, default=30)
+    p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser("info", help="show one clip in detail")
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_info)
+
+    p = sub.add_parser("relabel", help="set the job labels on an existing clip")
+    p.add_argument("id", type=int)
+    _add_label_arguments(p)
+    p.set_defaults(func=cmd_relabel)
+
+    p = sub.add_parser("status", help="health check: ffmpeg, disk, cameras")
+    p.add_argument("--quick", action="store_true", help="skip the camera network tests")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("web", help="start the web UI")
+    p.add_argument("--host", default="0.0.0.0", help="default 0.0.0.0 (whole shop LAN)")
+    p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--debug", action="store_true")
+    p.set_defaults(func=cmd_web)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    _setup_logging(args.verbose)
+    try:
+        return args.func(args)
+    except (ConfigError, RecorderError, CaptureError, ffmpeg.FFmpegError) as exc:
+        # These are the expected, explainable failures — show the message, not a
+        # traceback, because the person reading it is not a programmer.
+        print(f"\n{BAD} {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

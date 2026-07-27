@@ -1,0 +1,37 @@
+# --- SECRETS: camera IPs and passwords. Never commit. ---
+repaircam/cameras.yaml
+cameras.yaml
+
+# Recordings / database (they live in ~/repaircam-data by default, but never
+# commit them even if someone points REPAIRCAM_DATA_DIR at the repo).
+repaircam-data/
+*.mp4
+*.mkv
+*.jpg
+*.jpeg
+*.db
+*.db-journal
+*.db-wal
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.log

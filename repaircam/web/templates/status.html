@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Status — RepairCam{% endblock %}
+
+{% block content %}
+<h1>Status</h1>
+
+<h2 class="section">This recorder</h2>
+<dl class="facts">
+  <dt>ffmpeg</dt>
+  <dd>
+    {% if ffmpeg_ok %}
+      <span class="ok-text">installed</span> — <code>{{ ffmpeg_version }}</code>
+    {% else %}
+      <span class="warn-text">not installed.</span>
+      Run <code>sudo apt update &amp;&amp; sudo apt install -y ffmpeg</code> on this box.
+    {% endif %}
+  </dd>
+  <dt>Data directory</dt><dd><code>{{ data_dir }}</code></dd>
+  {% if disk %}
+  <dt>Disk</dt>
+  <dd class="{{ 'warn-text' if disk.free_gb < 20 else '' }}">
+    {{ disk.free_gb }} GB free of {{ disk.total_gb }} GB ({{ disk.used_percent }}% used)
+    — room for roughly {{ disk.bench_hours }} more bench-hours
+  </dd>
+  {% endif %}
+  <dt>Recorded</dt>
+  <dd>{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB</dd>
+</dl>
+
+<h2 class="section">Cameras</h2>
+{% if not checked %}
+  <p class="muted">Testing every camera takes a few seconds.</p>
+  <p><a class="btn btn-quiet" href="{{ url_for('repaircam.status', cameras=1) }}">Test all cameras now</a></p>
+  <table class="table">
+    <tbody>
+    {% for wc, camera in cameras.items() %}
+      <tr><td><b>{{ wc }}</b></td><td>{{ camera.name }}</td>
+          <td class="muted">{{ camera.model or camera.backend }}</td>
+          <td class="muted">{{ camera.host }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <table class="table">
+    <tbody>
+    {% for check in checks %}
+      <tr>
+        <td><b>{{ check.work_center }}</b></td>
+        <td>{{ check.camera.name }}</td>
+        <td>{% if check.ok %}<span class="pill ok">reachable</span>{% else %}<span class="pill warn">problem</span>{% endif %}</td>
+        <td class="muted">{{ check.message }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <p><a class="btn btn-quiet" href="{{ url_for('repaircam.status', cameras=1) }}">Test again</a></p>
+{% endif %}
+
+{% if events %}
+<h2 class="section">Recent activity</h2>
+<ul class="events">
+  {% for e in events %}
+    <li><span class="kind kind-{{ e.kind }}">{{ e.kind }}</span>
+        <span class="muted">{{ e.ts.replace('T', ' ')[:19] }}</span>
+        {% if e.work_center %}<b>{{ e.work_center }}</b>{% endif %}
+        {{ e.detail }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

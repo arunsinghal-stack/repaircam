@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Benches — RepairCam{% endblock %}
+
+{% block content %}
+<h1>Benches</h1>
+
+<div class="stats">
+  <div class="stat"><b>{{ stats.today }}</b><span>clips today</span></div>
+  <div class="stat"><b>{{ stats.clips }}</b><span>clips total</span></div>
+  <div class="stat"><b>{{ stats.hours }}</b><span>hours recorded</span></div>
+  <div class="stat"><b>{{ stats.gigabytes }}</b><span>GB on disk</span></div>
+  {% if stats.unlabelled %}
+  <div class="stat warn"><b>{{ stats.unlabelled }}</b><span>need a job label</span></div>
+  {% endif %}
+</div>
+
+<div class="bench-grid">
+  {% for wc, status in statuses.items() %}
+  <a class="bench-card state-{{ status.state }}" href="{{ url_for('repaircam.bench', work_center=wc) }}"
+     data-bench="{{ wc }}">
+    <div class="bench-head">
+      <h2>{{ wc }}</h2>
+      <span class="pill" data-field="state">{{ status.state }}</span>
+    </div>
+    <p class="muted">{{ cameras[wc].name if wc in cameras else status.camera }}</p>
+
+    {% if status.busy %}
+      <p class="timer" data-field="elapsed">{{ status.elapsed_hms }}</p>
+      <p class="muted">
+        {{ status.segments }} segment{{ '' if status.segments == 1 else 's' }}
+        {%- if status.labels.mo_name %} &middot; {{ status.labels.mo_name }}{% endif %}
+      </p>
+    {% else %}
+      <p class="timer idle">Ready</p>
+      <p class="muted">Tap to record</p>
+    {% endif %}
+
+    {% if status.last_error %}
+      <p class="err">{{ status.last_error }}</p>
+    {% endif %}
+  </a>
+  {% else %}
+  <p class="muted">No cameras configured yet. Copy
+    <code>repaircam/cameras.example.yaml</code> to <code>repaircam/cameras.yaml</code>.</p>
+  {% endfor %}
+</div>
+
+{% if recent %}
+<h2 class="section">Recent clips</h2>
+<table class="table">
+  <tbody>
+  {% for r in recent %}
+    <tr>
+      <td><a href="{{ url_for('repaircam.clip', recording_id=r.id) }}">{{ r.title }}</a></td>
+      <td class="muted">{{ r.work_center }}</td>
+      <td class="muted">{{ r.duration_hms }}</td>
+      <td class="muted">{{ r.started_at.replace('T', ' ')[:16] }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Keep the bench cards live without a page reload.
+  RepairCam.pollStatus(function (data) {
+    Object.entries(data.benches).forEach(function ([wc, status]) {
+      var card = document.querySelector('[data-bench="' + wc + '"]');
+      if (!card) return;
+      card.className = 'bench-card state-' + status.state;
+      RepairCam.setField(card, 'state', status.state);
+      RepairCam.setField(card, 'elapsed', status.elapsed_hms);
+    });
+  });
+</script>
+{% endblock %}
