@@ -20,7 +20,7 @@ from flask import (
     url_for,
 )
 
-from .. import __version__, config, ffmpeg, recovery
+from .. import __version__, config, ffmpeg, recovery, saarseva
 from ..backends import CaptureError, build_backend
 from ..catalogue import Catalogue, JobLabels, read_sidecar
 from ..config import ConfigError
@@ -335,8 +335,12 @@ def status():
     # in the library, because it never became a clip. Say so here.
     orphans = recovery.find_orphans()
 
+    trigger = current_app.extensions.get("trigger")
+
     return render_template(
         "status.html",
+        trigger=trigger.status() if trigger else None,
+        trigger_configured=saarseva.is_configured(),
         orphans=orphans,
         orphan_mb=round(sum(o.size_mb for o in orphans), 1),
         ffmpeg_version=ffmpeg.version(),

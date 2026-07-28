@@ -1,0 +1,272 @@
+"""The auto-trigger: start and stop recording from what saar-seva reports.
+
+Today a technician presses Start twice — once in saar-seva for time tracking,
+once in RepairCam for video. This removes the second one by polling saar-seva and
+driving the recorders to match.
+
+**The trigger is a convenience, never a dependency.** Render sleeps, home internet
+drops, tokens expire. None of that may stop the shop recording, so every failure
+here is logged and skipped, and the web UI keeps working exactly as before.
+
+Not switched on yet: saar-seva's endpoints do not exist. See
+docs/PHASE5-CONTRACT.md.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+
+from .catalogue import Catalogue, Recording
+from .recorder import RecorderError, RecorderPool, State
+from .saarseva import ActiveOperation, SaarSevaClient, SaarSevaConfig, SaarSevaError
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class TickResult:
+    """What one poll did. Returned for tests, the CLI and the status page."""
+
+    ok: bool = True
+    error: str = ""
+    active: int = 0
+    started: list[str] = field(default_factory=list)
+    finished: list[str] = field(default_factory=list)
+    links_posted: list[int] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.started or self.finished or self.links_posted)
+
+    def summary(self) -> str:
+        if not self.ok:
+            return f"poll failed: {self.error}"
+        bits = [f"{self.active} active"]
+        for label, items in (
+            ("started", self.started),
+            ("finished", self.finished),
+            ("skipped", self.skipped),
+        ):
+            if items:
+                bits.append(f"{label}: {', '.join(items)}")
+        if self.links_posted:
+            bits.append(f"links posted: {len(self.links_posted)}")
+        return "; ".join(bits)
+
+
+class Trigger:
+    """Keeps the recorders in step with what saar-seva says is running."""
+
+    def __init__(
+        self,
+        pool: RecorderPool,
+        client: SaarSevaClient,
+        *,
+        catalogue: Catalogue | None = None,
+        config: SaarSevaConfig | None = None,
+    ):
+        self.pool = pool
+        self.client = client
+        self.config = config or client.config
+        self.catalogue = catalogue or pool.catalogue
+
+        # Benches this trigger started, and which operation each is recording.
+        # Only these are ever stopped automatically — see _is_ours.
+        self._owned: dict[str, str] = {}
+        # The operation currently being recorded on each owned bench...
+        self._operation_by_bench: dict[str, ActiveOperation] = {}
+        # ...and, once filed, the operation behind a clip, so its work order id
+        # can go with the link when it is posted.
+        self._operations: dict[int, ActiveOperation] = {}
+        self._lock = threading.RLock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.last_result: TickResult | None = None
+        self.last_tick_at: float = 0.0
+
+    # -- one poll -----------------------------------------------------------
+
+    def tick(self) -> TickResult:
+        """Poll once and make the recorders match. Never raises."""
+        result = TickResult()
+        try:
+            operations = self.client.fetch_active()
+        except SaarSevaError as exc:
+            # Crucially, do not touch any recorder. A failed poll must never be
+            # read as "nothing is running" — that would end every recording in
+            # the shop the moment the internet hiccups.
+            result.ok = False
+            result.error = str(exc)
+            log.warning("saar-seva poll failed, leaving recorders alone: %s", exc)
+            self._remember(result)
+            return result
+
+        wanted = self._by_bench(operations)
+        result.active = len(wanted)
+
+        with self._lock:
+            for work_center, operation in wanted.items():
+                self._reconcile_start(work_center, operation, result)
+            for work_center in list(self._owned):
+                if work_center not in wanted:
+                    self._finish(work_center, result, reason="no longer active")
+
+        self._post_pending_links(result)
+        self._remember(result)
+        if result.changed:
+            log.info("trigger: %s", result.summary())
+        return result
+
+    def _by_bench(self, operations: list[ActiveOperation]) -> dict[str, ActiveOperation]:
+        """One operation per bench, limited to benches that have a camera."""
+        allowed = set(self.config.work_centers)
+        wanted: dict[str, ActiveOperation] = {}
+        for operation in operations:
+            if allowed and operation.work_center not in allowed:
+                continue
+            if operation.work_center in wanted:
+                # Two operations on one bench is a saar-seva data problem; one
+                # camera cannot record two jobs. Keep the first and say so.
+                log.warning(
+                    "saar-seva reports two operations on %s; recording only %s",
+                    operation.work_center,
+                    wanted[operation.work_center].key,
+                )
+                continue
+            wanted[operation.work_center] = operation
+        return wanted
+
+    def _reconcile_start(
+        self, work_center: str, operation: ActiveOperation, result: TickResult
+    ) -> None:
+        current = self._owned.get(work_center)
+        if current == operation.key:
+            return  # already recording the right thing
+
+        if current:
+            # The technician moved to a different operation without the previous
+            # one disappearing first. File what we have, then start the new one.
+            self._finish(work_center, result, reason="operation changed")
+
+        try:
+            recorder = self.pool.get(work_center)
+        except Exception as exc:
+            result.skipped.append(f"{work_center} (no camera: {exc})")
+            return
+
+        if recorder.state is not State.IDLE:
+            # Someone is already recording here by hand. Leave it completely
+            # alone — taking over would cut their clip in half.
+            result.skipped.append(f"{work_center} (already recording by hand)")
+            return
+
+        try:
+            recorder.start(operation.labels())
+        except RecorderError as exc:
+            log.error("trigger could not start %s: %s", work_center, exc)
+            result.skipped.append(f"{work_center} ({exc})")
+            return
+
+        self._owned[work_center] = operation.key
+        self._operation_by_bench[work_center] = operation
+        result.started.append(work_center)
+
+    def _finish(self, work_center: str, result: TickResult, *, reason: str) -> None:
+        """Press Done on a bench this trigger started."""
+        operation = self._operation_by_bench.pop(work_center, None)
+        self._owned.pop(work_center, None)
+
+        try:
+            recorder = self.pool.get(work_center)
+            recording = recorder.done()
+        except RecorderError as exc:
+            # Nothing usable, or the join failed. The footage is not lost — the
+            # segments stay on disk for `cli recover`.
+            log.warning("trigger could not finish %s (%s): %s", work_center, reason, exc)
+            result.skipped.append(f"{work_center} ({exc})")
+            return
+        except Exception as exc:
+            log.error("unexpected error finishing %s: %s", work_center, exc)
+            result.skipped.append(f"{work_center} ({exc})")
+            return
+
+        if operation and recording.id is not None:
+            self._operations[recording.id] = operation
+        result.finished.append(work_center)
+
+    # -- links --------------------------------------------------------------
+
+    def _post_pending_links(self, result: TickResult) -> None:
+        """Send links for clips whose chatter line has not been written yet.
+
+        Driven from the catalogue rather than from memory, so a clip whose post
+        failed — or one finished before a restart — is retried later instead of
+        being forgotten.
+        """
+        if not self.config.link_base:
+            return
+
+        for recording in self.catalogue.list_unposted(limit=10):
+            try:
+                self.client.post_recording(
+                    recording, operation=self._operations.get(recording.id)
+                )
+            except SaarSevaError as exc:
+                log.warning("could not post the link for clip %s: %s", recording.id, exc)
+                return  # saar-seva is unhappy; stop hammering it until next tick
+
+            self.catalogue.mark_link_posted(recording.id)
+            self._operations.pop(recording.id, None)
+            result.links_posted.append(recording.id)
+
+    # -- background loop ----------------------------------------------------
+
+    def _remember(self, result: TickResult) -> None:
+        self.last_result = result
+        self.last_tick_at = time.time()
+
+    def run_forever(self) -> None:
+        log.info(
+            "trigger polling %s every %ss", self.config.base_url, self.config.poll_seconds
+        )
+        while not self._stop.is_set():
+            try:
+                self.tick()
+            except Exception as exc:  # a bug here must not kill the recorder
+                log.exception("unexpected error in the trigger loop: %s", exc)
+            self._stop.wait(self.config.poll_seconds)
+
+    def start(self) -> None:
+        """Run the loop on a background thread."""
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self.run_forever, name="repaircam-trigger", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 5) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+
+    @property
+    def running(self) -> bool:
+        return bool(self._thread and self._thread.is_alive())
+
+    def status(self) -> dict:
+        """For the status page."""
+        result = self.last_result
+        return {
+            "running": self.running,
+            "base_url": self.config.base_url,
+            "poll_seconds": self.config.poll_seconds,
+            "owned": dict(self._owned),
+            "last_tick_at": self.last_tick_at,
+            "seconds_since_tick": round(time.time() - self.last_tick_at, 1) if self.last_tick_at else None,
+            "ok": result.ok if result else None,
+            "summary": result.summary() if result else "not polled yet",
+        }

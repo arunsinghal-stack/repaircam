@@ -178,3 +178,11 @@ def test_status_page_surfaces_unsaved_footage(client, data_root: Path):
 
 def test_status_page_stays_quiet_when_nothing_is_orphaned(client):
     assert b"Unsaved footage" not in client.get("/status").data
+
+
+def test_status_says_the_trigger_is_off_when_unconfigured(client, monkeypatch, tmp_path: Path):
+    """The normal state today — it must read as fine, not broken."""
+    monkeypatch.setenv("REPAIRCAM_SAARSEVA", str(tmp_path / "nope.yaml"))
+    page = client.get("/status").data
+    assert b"Automatic start/stop" in page
+    assert b"technicians start and stop recordings themselves" in page

@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, ffmpeg, recovery
+from . import __version__, config, ffmpeg, recovery, saarseva
 from .backends import CaptureError, build_backend
 from .catalogue import Catalogue, JobLabels
 from .config import ConfigError
@@ -218,6 +218,65 @@ def cmd_recover(args: argparse.Namespace) -> int:
     return 1 if failed and not recovered else 0
 
 
+def cmd_trigger(args: argparse.Namespace) -> int:
+    """Test or run the automatic trigger that starts recording from saar-seva.
+
+    Nothing is switched on until repaircam/saarseva.yaml exists, and saar-seva's
+    endpoints do not exist yet — see docs/PHASE5-CONTRACT.md.
+    """
+    from .recorder import RecorderPool
+    from .trigger import Trigger
+
+    if not saarseva.is_configured():
+        print("The automatic trigger is OFF — technicians start recordings by hand.")
+        print("\nTo switch it on:")
+        print(f"    cp {saarseva.config_file().parent / 'saarseva.example.yaml'} "
+              f"{saarseva.config_file()}")
+        print(f"\nWhen you fill it in, this recorder's address is probably:")
+        print(f"    link_base: \"{saarseva.default_link_base()}\"")
+        print("\nNote: saar-seva does not have the required endpoints yet.")
+        return 0
+
+    config = saarseva.load_config()
+    client = saarseva.SaarSevaClient(config)
+
+    print("Automatic trigger settings:")
+    for key, value in config.describe().items():
+        print(f"    {key:<14} {value}")
+
+    print("\nAsking saar-seva what is running...")
+    ok, message = client.check()
+    print(f"    {OK if ok else BAD} {message}")
+    if not ok:
+        return 1
+
+    for operation in client.fetch_active():
+        print(f"      {operation.work_center:<6} {operation.mo_name or '(no MO)':<16} "
+              f"{operation.operation or '(no operation)'}")
+
+    if not (args.once or args.run):
+        print("\nNothing was changed. To act on this once:")
+        print("    python3 -m repaircam.cli trigger --once")
+        return 0
+
+    trigger = Trigger(RecorderPool(Catalogue()), client, config=config)
+    if args.once:
+        print("\nRunning one cycle...")
+        print(f"    {trigger.tick().summary()}")
+        return 0
+
+    print(f"\nPolling every {config.poll_seconds}s. Press Ctrl-C to stop.")
+    try:
+        while True:
+            result = trigger.tick()
+            if result.changed or not result.ok:
+                print(f"    {result.summary()}")
+            time.sleep(config.poll_seconds)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Is this box healthy enough to record? Checks tools, disk and cameras."""
     print("RepairCam status\n")
@@ -361,6 +420,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true", help="recover even if it may still be recording")
     p.set_defaults(func=cmd_recover)
 
+    p = sub.add_parser("trigger", help="the saar-seva automatic start/stop (Phase 5)")
+    p.add_argument("--once", action="store_true", help="run a single cycle and stop")
+    p.add_argument("--run", action="store_true", help="keep polling until Ctrl-C")
+    p.set_defaults(func=cmd_trigger)
+
     p = sub.add_parser("status", help="health check: ffmpeg, disk, cameras")
     p.add_argument("--quick", action="store_true", help="skip the camera network tests")
     p.set_defaults(func=cmd_status)
@@ -384,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         RecorderError,
         CaptureError,
         recovery.RecoveryError,
+        saarseva.SaarSevaError,
         ffmpeg.FFmpegError,
     ) as exc:
         # These are the expected, explainable failures — show the message, not a

@@ -27,6 +27,29 @@
   <dd>{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB</dd>
 </dl>
 
+<h2 class="section">Automatic start/stop (saar-seva)</h2>
+{% if trigger %}
+  <dl class="facts">
+    <dt>Status</dt>
+    <dd>{% if trigger.running %}<span class="ok-text">running</span>{% else %}<span class="warn-text">stopped</span>{% endif %}
+        &mdash; polling {{ trigger.base_url }} every {{ trigger.poll_seconds }}s</dd>
+    <dt>Last check</dt>
+    <dd class="{{ 'warn-text' if trigger.ok is false else '' }}">
+      {{ trigger.summary }}
+      {%- if trigger.seconds_since_tick is not none %} ({{ trigger.seconds_since_tick }}s ago){% endif %}</dd>
+    {% if trigger.owned %}
+    <dt>Auto-recording</dt>
+    <dd>{% for wc, key in trigger.owned.items() %}<b>{{ wc }}</b> {{ key }}{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+    {% endif %}
+  </dl>
+{% elif trigger_configured %}
+  <p class="warn-text">Configured, but not running. Check the recorder's log:
+     <code>journalctl -u repaircam -n 50</code></p>
+{% else %}
+  <p class="muted">Off &mdash; technicians start and stop recordings themselves.
+     This is normal: saar-seva does not have the required endpoints yet.</p>
+{% endif %}
+
 {% if orphans %}
 <h2 class="section">Unsaved footage</h2>
 <div class="flash flash-error">

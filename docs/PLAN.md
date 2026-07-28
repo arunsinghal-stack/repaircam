@@ -170,7 +170,7 @@ preview must never take bandwidth from a recording in progress.
 them, because an unlabelled clip is nearly useless for goal 3 and the count is the
 nudge to fix it.
 
-## 6. Phase 5 — the saar-seva / Odoo trigger (not built)
+## 6. Phase 5 — the saar-seva / Odoo trigger (RepairCam half built)
 
 Today a technician presses Start in two places: saar-seva (for time tracking) and
 RepairCam (for video). Phase 5 removes the second one.
@@ -198,7 +198,12 @@ into the shop, so **RepairCam polls saar-seva** — not the other way round.
   saar-seva writes the link into the Odoo MO chatter (never the video itself)
 ```
 
-Two endpoints have to be added to saar-seva:
+**Status.** RepairCam's half is built and tested: `saarseva.py` is the polling client,
+`trigger.py` reconciles the recorders against what saar-seva reports, and `cli.py
+trigger` exercises it. It stays switched off until `repaircam/saarseva.yaml` exists.
+The precise wire contract is in [PHASE5-CONTRACT.md](PHASE5-CONTRACT.md).
+
+Two endpoints still have to be added to saar-seva:
 
 - `GET /trc/active` → the operations currently running, each with work center, MO
   name, operation, and the device/IMEI from the existing `stock.lot` lookup.
@@ -227,7 +232,14 @@ Points to get right when building it:
   dependency.
 - **The link is a LAN URL.** It only opens inside the shop — which is the point.
 - **`link_posted` already exists** on the recordings table for marking a clip whose
-  link has reached the chatter, so a retry does not post it twice.
+  link has reached the chatter, so a retry does not post it twice. Retries are driven
+  from `Catalogue.list_unposted()`, not from memory, so a clip finished just before a
+  restart is still posted afterwards.
+- **A failed poll must never end a recording.** `Trigger.tick()` returns without
+  touching any recorder when the poll fails; treating an error as "nothing is running"
+  would stop every bench in the shop the moment the internet hiccups.
+- **A manual recording is never taken over or stopped.** The trigger only ends benches
+  it started itself, so a technician recording by hand cannot have their clip cut.
 
 ## 7. Hardware and capacity
 
@@ -332,6 +344,6 @@ the library, having never become clips.
 - **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
   enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
 - **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
-- **Phase 5** as above.
+- **Phase 5's saar-seva half** — the two endpoints, per PHASE5-CONTRACT.md.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from
   sidecars, and it can, but the command to do it is not written.

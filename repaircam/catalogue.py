@@ -330,6 +330,21 @@ class Catalogue:
             rows = conn.execute(query, [*params, limit, offset]).fetchall()
         return [self._to_recording(row) for row in rows]
 
+    def list_unposted(self, limit: int = 10) -> list[Recording]:
+        """Clips whose link has not reached the Odoo MO chatter yet.
+
+        Only labelled clips qualify: without an MO there is no chatter to post
+        to. Driving retries from here rather than from memory means a clip
+        finished just before a restart is still posted afterwards.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recordings WHERE link_posted = 0 AND mo_name != ''"
+                " ORDER BY id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._to_recording(row) for row in rows]
+
     def count(self) -> int:
         with self.connect() as conn:
             return int(conn.execute("SELECT COUNT(*) AS n FROM recordings").fetchone()["n"])

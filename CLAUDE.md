@@ -54,8 +54,12 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Recovery + deploy (DONE, in repo):** `deploy/` installs the web UI as a systemd
   service; `repaircam/recovery.py` + `cli.py recover` re-file segments a restart left
   orphaned (listed on the status page). Note Phases 3 and 4 are undefined anywhere.
-- **Phase 5 (next):** the saar-seva/Odoo auto-trigger + chatter write-back. Design and the config
-  outline are in docs/PLAN.md; nothing is implemented yet.
+- **Phase 5 (RepairCam half DONE, saar-seva half NOT):** `saarseva.py` (polling client, stdlib
+  urllib) + `trigger.py` (reconciles recorders against `GET /trc/active`) + `cli.py trigger`.
+  Off until `repaircam/saarseva.yaml` exists (gitignored; template alongside it).
+  **Blocked on saar-seva:** `GET /trc/active` and `POST /trc/recordings` do not exist yet —
+  the exact contract for them is docs/PHASE5-CONTRACT.md. That work is in the
+  `arunsinghal-stack/saar-seva-app` repo, which must be added to the session first.
 
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.
