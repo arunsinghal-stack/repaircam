@@ -267,10 +267,44 @@ ffmpeg command construction, and every web route.
 What is **not** covered and can only be checked on the shop LAN: real RTSP capture,
 real concat of real MP4s, MJPEG preview, and focus.
 
-## 9. Open items
+## 9. Running it as a service
+
+`deploy/repaircam.service` is a template; `deploy/install-service.sh` fills in the
+user, paths, port and data directory and installs it. The script checks that the
+virtualenv, Flask, ffmpeg and cameras.yaml are actually in place *before* handing the
+unit to systemd, because a service that fails at boot is much harder for a
+non-technical owner to diagnose than a script that refuses up front.
+
+Choices worth keeping:
+
+- **Runs as the ordinary shop user, not root.** Recordings live in that user's home
+  directory and nothing here needs administrator powers.
+- **`Wants=network-online.target`**, not plain `network.target` — the latter is
+  satisfied before an address is assigned, and RepairCam is useless until it can
+  reach the cameras.
+- **`StartLimitIntervalSec=0` in `[Unit]`.** systemd's default gives up permanently
+  after a few rapid restarts; a camera unplugged overnight would leave the shop with
+  a dead recorder in the morning. Note the section: systemd *silently ignores* this
+  key under `[Service]`, which is easy to get wrong and impossible to notice without
+  `systemd-analyze verify`.
+- **`TimeoutStopSec=30`.** On stop, systemd signals every process in the cgroup,
+  including ffmpeg, which finalises its MP4 on SIGTERM. Rushing this corrupts clips.
+- **Hardening stops at `ProtectSystem=full`.** ffmpeg spawns subprocesses and writes
+  video into the home directory; a lockdown that breaks recording is worse than no
+  lockdown.
+
+**Known gap.** A restart part-way through an operation loses the in-memory session.
+The segments survive in `segments/`, and each is a valid MP4, but nothing joins or
+catalogues them — so the footage exists on disk and is invisible in the library. The
+auto-restart behaviour makes this more likely than it was before, so a recovery
+command that adopts orphaned segment directories is the obvious next piece of work.
+
+## 10. Open items
 
 - **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
   enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
+- **Recover orphaned segments.** A restart mid-operation leaves valid segment MP4s in
+  `segments/` that nothing joins or catalogues. See section 9.
 - **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
 - **Phase 5** as above.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from

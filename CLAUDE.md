@@ -49,7 +49,8 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   state machine, SQLite catalogue, `cli.py`. Test: `python3 -m repaircam.cli record WC2 --duration 20`.
 - **Phase 2 (DONE, in repo):** Flask web UI in `repaircam/web/` — dashboard, bench page with live
   MJPEG preview and Start/Pause/Done, library with search and re-labelling, status page.
-  Start it with `python3 -m repaircam.cli web`.
+  Start it with `python3 -m repaircam.cli web`, or install it permanently with
+  `./deploy/install-service.sh` (systemd unit + installer in `deploy/`).
 - **Phase 5 (next):** the saar-seva/Odoo auto-trigger + chatter write-back. Design and the config
   outline are in docs/PLAN.md; nothing is implemented yet.
 

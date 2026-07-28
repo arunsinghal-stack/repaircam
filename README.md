@@ -132,6 +132,64 @@ Everything between Start and Done becomes **one video** for that operation.
 
 ---
 
+## Make it start by itself (recommended)
+
+The command above only runs while that terminal window stays open. Once the focus
+test has passed and you want RepairCam running permanently, install it as a
+**service**: it then starts on its own when the machine boots and restarts itself if
+it ever crashes.
+
+From inside the `repaircam` folder:
+
+```bash
+./deploy/install-service.sh
+```
+
+It will ask for your password (installing a service needs administrator rights).
+Every line it prints should say `OK`. At the end it shows the address to open.
+
+> Run it as yourself, **not** with `sudo` in front. The script asks for
+> administrator rights only for the steps that need them, so that your recordings
+> stay owned by you.
+
+To use a different port or storage location:
+
+```bash
+./deploy/install-service.sh --port 9000
+./deploy/install-service.sh --data-dir /mnt/archive/repaircam-data
+```
+
+To see exactly what it would install without changing anything:
+
+```bash
+./deploy/install-service.sh --dry-run
+```
+
+### Managing the service afterwards
+
+| What you want | Command |
+|---|---|
+| Is it running? | `systemctl status repaircam` |
+| Watch what it is doing | `journalctl -u repaircam -f` (press `Ctrl+C` to stop watching) |
+| See today's messages | `journalctl -u repaircam --since today` |
+| Restart it | `sudo systemctl restart repaircam` |
+| Stop it until the next reboot | `sudo systemctl stop repaircam` |
+| Stop it permanently | `sudo systemctl disable --now repaircam` |
+
+After changing `cameras.yaml`, restart the service so it picks up the change:
+
+```bash
+sudo systemctl restart repaircam
+```
+
+> **One thing to know.** If the machine reboots or the service restarts *while a
+> technician is part-way through an operation*, the finished pieces are kept in
+> `~/repaircam-data/segments/` but they are **not** joined into a clip and will not
+> appear in the library. Nothing is deleted, but that operation has to be recorded
+> again. Ask the technician to press **Done** before the box is shut down.
+
+---
+
 ## Everyday commands
 
 Run these from the `repaircam` folder.
