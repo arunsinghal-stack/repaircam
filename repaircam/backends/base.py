@@ -93,7 +93,7 @@ class CaptureBackend(ABC):
         """Yield JPEG frames as bytes, for the browser live preview."""
 
     @abstractmethod
-    def check(self) -> tuple[bool, str]:
+    def check(self, *, timeout: float | None = None) -> tuple[bool, str]:
         """Is the camera reachable right now? Returns (ok, human message)."""
 
     def concat(self, segments: list[Segment], dest: Path) -> Path:

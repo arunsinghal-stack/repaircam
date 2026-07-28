@@ -249,8 +249,14 @@ def snapshot(url: str, dest: Path, *, timeout: float = 20) -> Path:
     return dest
 
 
-def probe(path_or_url: str, *, timeout: float = 20) -> dict:
-    """Return ffprobe's JSON description of a file or stream."""
+def probe(path_or_url: str, *, timeout: float = 20, quick: bool = False) -> dict:
+    """Return ffprobe's JSON description of a file or stream.
+
+    ``quick`` caps how much of the stream ffprobe will read before answering.
+    That is right for a reachability check — we only want to know the camera
+    replies — and wrong for a finished clip, where an under-read gives a
+    truncated duration. So it is off by default.
+    """
     require_ffmpeg()
     if shutil.which(FFPROBE) is None:
         raise FFmpegMissing("ffprobe is not installed (it ships with ffmpeg).")
@@ -261,6 +267,12 @@ def probe(path_or_url: str, *, timeout: float = 20) -> dict:
         "error",
         "-rtsp_transport",
         "tcp",
+    ]
+    if quick:
+        # Enough to see the stream header on a 4MP camera, not enough to sit
+        # there buffering. Both options are ancient and safe on any ffmpeg.
+        command += ["-analyzeduration", "2000000", "-probesize", "1000000"]
+    command += [
         "-print_format",
         "json",
         "-show_format",
@@ -274,9 +286,9 @@ def probe(path_or_url: str, *, timeout: float = 20) -> dict:
         raise FFmpegError(f"could not read ffprobe output: {exc}") from exc
 
 
-def media_summary(path_or_url: str, *, timeout: float = 20) -> dict:
+def media_summary(path_or_url: str, *, timeout: float = 20, quick: bool = False) -> dict:
     """Boil ffprobe down to the handful of fields worth storing in a sidecar."""
-    info = probe(path_or_url, timeout=timeout)
+    info = probe(path_or_url, timeout=timeout, quick=quick)
     video = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
     audio = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
     fmt = info.get("format", {})
@@ -310,18 +322,39 @@ def duration_of(path: Path, *, timeout: float = 20) -> float | None:
         return None
 
 
-def reachable(url: str, *, timeout: float = 10) -> tuple[bool, str]:
+#: How long to wait for a camera to answer a reachability check. Generous on
+#: purpose: opening a 4MP RTSP stream on a modest recorder box genuinely takes
+#: several seconds, and a status page that calls a healthy camera broken is
+#: worse than one that takes a moment longer to say so.
+DEFAULT_CHECK_TIMEOUT = 30.0
+
+
+def reachable(url: str, *, timeout: float = DEFAULT_CHECK_TIMEOUT) -> tuple[bool, str]:
     """Can we actually open this stream? Returns (ok, message).
 
     Used by the status page so the owner can tell a camera problem from a
     RepairCam problem without reading a stack trace.
     """
     try:
-        summary = media_summary(url, timeout=timeout)
+        summary = media_summary(url, timeout=timeout, quick=True)
     except FFmpegMissing as exc:
         return False, str(exc)
     except FFmpegError as exc:
-        return False, str(exc).splitlines()[-1] if str(exc) else "stream did not open"
+        message = str(exc).strip()
+        lowered = message.lower()
+        # Translate the three failures that actually happen at a bench into
+        # what to go and check, rather than echoing ffmpeg at someone who
+        # cannot act on it.
+        if "timed out" in lowered:
+            return False, (
+                f"no answer within {timeout:g}s — check the camera is powered and "
+                f"that its IP in cameras.yaml is still correct (try: ping the camera)"
+            )
+        if "401" in message or "unauthorized" in lowered:
+            return False, "the camera rejected the password in cameras.yaml"
+        if "connection refused" in lowered:
+            return False, "the camera refused the connection — is RTSP enabled, and the port right?"
+        return False, message.splitlines()[-1] if message else "stream did not open"
     size = ""
     if summary.get("width") and summary.get("height"):
         size = f" {summary['width']}x{summary['height']}"

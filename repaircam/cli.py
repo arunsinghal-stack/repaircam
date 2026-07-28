@@ -72,7 +72,7 @@ def cmd_cameras(args: argparse.Namespace) -> int:
         print(f"         record: {camera.safe_main_url}")
         print(f"         preview: {camera.safe_sub_url}")
         if args.check:
-            ok, message = build_backend(camera).check()
+            ok, message = build_backend(camera).check(timeout=args.timeout)
             print(f"         {OK if ok else BAD} {message}")
         print()
     return 0
@@ -312,7 +312,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if args.quick:
             print(f"    {work_center:<6} {camera.name} at {camera.host}")
             continue
-        ok, message = build_backend(camera).check()
+        ok, message = build_backend(camera).check(timeout=args.timeout)
         failures += 0 if ok else 1
         print(f"    {OK if ok else BAD} {work_center:<6} {camera.name:<28} {message}")
 
@@ -379,6 +379,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("cameras", help="list configured benches")
     p.add_argument("--check", action="store_true", help="also test each camera is reachable")
+    p.add_argument(
+        "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
+        help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
     p.set_defaults(func=cmd_cameras)
 
     p = sub.add_parser("record", help="record a clip from one bench")
@@ -427,6 +431,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", help="health check: ffmpeg, disk, cameras")
     p.add_argument("--quick", action="store_true", help="skip the camera network tests")
+    p.add_argument(
+        "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
+        help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("web", help="start the web UI")

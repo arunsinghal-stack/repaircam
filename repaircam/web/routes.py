@@ -333,7 +333,9 @@ def status():
     checks = []
     if request.args.get("cameras") == "1":
         for work_center, camera in sorted(config.load_cameras().items()):
-            ok, message = build_backend(camera).check()
+            ok, message = build_backend(camera).check(
+                timeout=request.args.get("timeout", type=float)
+            )
             checks.append({"work_center": work_center, "camera": camera, "ok": ok, "message": message})
 
     # Footage left behind by a restart is invisible everywhere else — it is not

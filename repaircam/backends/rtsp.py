@@ -133,8 +133,10 @@ class RtspBackend(CaptureBackend):
             except subprocess.TimeoutExpired:
                 proc.kill()
 
-    def check(self) -> tuple[bool, str]:
-        return ffmpeg.reachable(self.camera.sub_url)
+    def check(self, *, timeout: float | None = None) -> tuple[bool, str]:
+        if timeout is None:
+            return ffmpeg.reachable(self.camera.sub_url)
+        return ffmpeg.reachable(self.camera.sub_url, timeout=timeout)
 
     def concat(self, segments: list[Segment], dest: Path) -> Path:
         """Join this operation's segments with ffmpeg's concat demuxer.
