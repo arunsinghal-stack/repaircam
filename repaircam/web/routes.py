@@ -65,7 +65,12 @@ def clip_path(recording) -> Path:
     """
     root = config.data_dir()
     path = (root / recording.path).resolve()
-    if not path.is_relative_to(root):
+    try:
+        # Path.is_relative_to() would read better but is Python 3.9+, and the
+        # shop recorder runs 3.8. relative_to() raising ValueError is the same
+        # test and works everywhere.
+        path.relative_to(root)
+    except ValueError:
         abort(400, "recording path is outside the data directory")
     if not path.exists():
         abort(404, "the video file for this recording is missing from disk")

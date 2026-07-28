@@ -33,6 +33,20 @@ ffmpeg -version
 You should see a line starting `ffmpeg version`. If you see `command not found`,
 the install did not work — do not continue.
 
+Also check Python:
+
+```bash
+python3 --version
+```
+
+Anything from **3.8** upwards is fine. If the next step complains that
+`ensurepip is not available`, install the matching venv package it names — for
+example on Ubuntu 20.04 (Python 3.8):
+
+```bash
+sudo apt install -y python3.8-venv
+```
+
 ### 2. Get RepairCam
 
 ```bash
