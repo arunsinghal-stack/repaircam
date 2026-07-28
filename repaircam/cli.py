@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, ffmpeg
+from . import __version__, config, ffmpeg, recovery
 from .backends import CaptureError, build_backend
 from .catalogue import Catalogue, JobLabels
 from .config import ConfigError
@@ -176,6 +176,48 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    """File footage that was recorded but never saved as a clip.
+
+    This happens when the recorder restarts part-way through an operation: the
+    segments survive on disk, but nothing joined them, so they never reached the
+    library. Safe by default — it lists what it found and only acts on --all.
+    """
+    orphans = recovery.find_orphans()
+    if not orphans:
+        print(f"{OK} Nothing to recover — no unsaved footage on this machine.")
+        return 0
+
+    print(f"Found {len(orphans)} unsaved recording(s):\n")
+    print(f"  {'WHICH':<26} {'WHEN':<20} {'PIECES':>6} {'SIZE':>8}")
+    for orphan in orphans:
+        active = "  (still recording?)" if orphan.looks_active(args.grace) else ""
+        when = orphan.started_iso.replace("T", " ")[:19]
+        print(
+            f"  {orphan.label:<26} {when:<20} {len(orphan.segments):>6} "
+            f"{orphan.size_mb:>7.1f}M{active}"
+        )
+
+    if not args.all:
+        print("\nNothing has been changed. To save these as clips, run:")
+        print("    python3 -m repaircam.cli recover --all")
+        print("\nThey will be saved without a job label — tag them afterwards in the Library.")
+        return 0
+
+    print()
+    recovered, failed = recovery.recover_all(grace_seconds=args.grace, force=args.force)
+
+    for recording in recovered:
+        print(f"  {OK} saved {recording.duration_hms:>8}  {recording.path}")
+    for orphan, reason in failed:
+        print(f"  {BAD} {orphan.label}: {reason}")
+
+    print(f"\n{len(recovered)} saved, {len(failed)} left alone.")
+    if recovered:
+        print("These clips have no job label yet. Tag them in the Library so they stay useful.")
+    return 1 if failed and not recovered else 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Is this box healthy enough to record? Checks tools, disk and cameras."""
     print("RepairCam status\n")
@@ -308,6 +350,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_label_arguments(p)
     p.set_defaults(func=cmd_relabel)
 
+    p = sub.add_parser("recover", help="save footage left behind by a restart")
+    p.add_argument("--all", action="store_true", help="actually save them (default: just list)")
+    p.add_argument(
+        "--grace",
+        type=float,
+        default=recovery.DEFAULT_GRACE_SECONDS,
+        help="seconds of inactivity before a folder counts as finished (default: %(default)s)",
+    )
+    p.add_argument("--force", action="store_true", help="recover even if it may still be recording")
+    p.set_defaults(func=cmd_recover)
+
     p = sub.add_parser("status", help="health check: ffmpeg, disk, cameras")
     p.add_argument("--quick", action="store_true", help="skip the camera network tests")
     p.set_defaults(func=cmd_status)
@@ -326,7 +379,13 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     try:
         return args.func(args)
-    except (ConfigError, RecorderError, CaptureError, ffmpeg.FFmpegError) as exc:
+    except (
+        ConfigError,
+        RecorderError,
+        CaptureError,
+        recovery.RecoveryError,
+        ffmpeg.FFmpegError,
+    ) as exc:
         # These are the expected, explainable failures — show the message, not a
         # traceback, because the person reading it is not a programmer.
         print(f"\n{BAD} {exc}", file=sys.stderr)

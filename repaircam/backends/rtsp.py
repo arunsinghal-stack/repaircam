@@ -151,22 +151,10 @@ class RtspBackend(CaptureBackend):
             usable[0].path.replace(dest)
             return dest
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        list_file = dest.with_suffix(".concat.txt")
-        # The concat demuxer's own quoting rule: wrap in single quotes and
-        # escape any single quote in the path.
-        lines = ["file '" + str(s.path.resolve()).replace("'", r"'\''") + "'" for s in usable]
-        list_file.write_text("\n".join(lines) + "\n")
-
         try:
-            ffmpeg.run(
-                ffmpeg.concat_command(list_file, dest, audio_codec="copy"),
-                timeout=max(120, 10 * len(usable)),
-            )
+            ffmpeg.concat_files([s.path for s in usable], dest)
         except ffmpeg.FFmpegError as exc:
             raise CaptureError(f"joining {len(usable)} segments failed: {exc}") from exc
-        finally:
-            list_file.unlink(missing_ok=True)
 
         for segment in usable:
             segment.path.unlink(missing_ok=True)

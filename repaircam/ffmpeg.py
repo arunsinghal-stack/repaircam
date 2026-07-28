@@ -216,6 +216,32 @@ def concat_command(list_file: Path, dest: Path, *, audio_codec: str = "copy") ->
 # --------------------------------------------------------------------------
 
 
+def concat_files(paths: list[Path], dest: Path, *, audio_codec: str = "copy") -> Path:
+    """Join MP4 files into one, without re-encoding. Inputs are left alone.
+
+    Lives here rather than on the backend because recovering orphaned segments
+    must work even when the camera that recorded them is long gone from
+    cameras.yaml.
+    """
+    if not paths:
+        raise FFmpegError("nothing to join")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if len(paths) == 1:
+        shutil.copy2(paths[0], dest)
+        return dest
+
+    list_file = dest.with_suffix(".concat.txt")
+    # The concat demuxer's own quoting rule: wrap in single quotes and escape
+    # any single quote in the path.
+    lines = ["file '" + str(p.resolve()).replace("'", r"'\''") + "'" for p in paths]
+    list_file.write_text("\n".join(lines) + "\n")
+    try:
+        run(concat_command(list_file, dest, audio_codec=audio_codec), timeout=max(120, 10 * len(paths)))
+    finally:
+        list_file.unlink(missing_ok=True)
+    return dest
+
+
 def snapshot(url: str, dest: Path, *, timeout: float = 20) -> Path:
     """Write a single JPEG still from ``url`` to ``dest``."""
     dest.parent.mkdir(parents=True, exist_ok=True)

@@ -162,3 +162,19 @@ def test_status_page_renders(client):
     response = client.get("/status")
     assert response.status_code == 200
     assert b"Data directory" in response.data
+
+
+def test_status_page_surfaces_unsaved_footage(client, data_root: Path):
+    """Orphaned segments are in no other page — the status page is where the
+    owner finds out footage exists but never became a clip."""
+    directory = data_root / "segments" / "WC2" / "20260727-101500"
+    directory.mkdir(parents=True)
+    (directory / "seg-001.mp4").write_bytes(b"video")
+
+    page = client.get("/status").data
+    assert b"Unsaved footage" in page
+    assert b"recover --all" in page
+
+
+def test_status_page_stays_quiet_when_nothing_is_orphaned(client):
+    assert b"Unsaved footage" not in client.get("/status").data

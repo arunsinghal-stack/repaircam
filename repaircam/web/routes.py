@@ -20,7 +20,7 @@ from flask import (
     url_for,
 )
 
-from .. import __version__, config, ffmpeg
+from .. import __version__, config, ffmpeg, recovery
 from ..backends import CaptureError, build_backend
 from ..catalogue import Catalogue, JobLabels, read_sidecar
 from ..config import ConfigError
@@ -331,8 +331,14 @@ def status():
             ok, message = build_backend(camera).check()
             checks.append({"work_center": work_center, "camera": camera, "ok": ok, "message": message})
 
+    # Footage left behind by a restart is invisible everywhere else — it is not
+    # in the library, because it never became a clip. Say so here.
+    orphans = recovery.find_orphans()
+
     return render_template(
         "status.html",
+        orphans=orphans,
+        orphan_mb=round(sum(o.size_mb for o in orphans), 1),
         ffmpeg_version=ffmpeg.version(),
         ffmpeg_ok=ffmpeg.available(),
         data_dir=root,

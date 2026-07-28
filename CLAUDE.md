@@ -51,6 +51,9 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   MJPEG preview and Start/Pause/Done, library with search and re-labelling, status page.
   Start it with `python3 -m repaircam.cli web`, or install it permanently with
   `./deploy/install-service.sh` (systemd unit + installer in `deploy/`).
+- **Recovery + deploy (DONE, in repo):** `deploy/` installs the web UI as a systemd
+  service; `repaircam/recovery.py` + `cli.py recover` re-file segments a restart left
+  orphaned (listed on the status page). Note Phases 3 and 4 are undefined anywhere.
 - **Phase 5 (next):** the saar-seva/Odoo auto-trigger + chatter write-back. Design and the config
   outline are in docs/PLAN.md; nothing is implemented yet.
 

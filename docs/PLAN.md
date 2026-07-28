@@ -293,18 +293,44 @@ Choices worth keeping:
   video into the home directory; a lockdown that breaks recording is worse than no
   lockdown.
 
-**Known gap.** A restart part-way through an operation loses the in-memory session.
-The segments survive in `segments/`, and each is a valid MP4, but nothing joins or
-catalogues them — so the footage exists on disk and is invisible in the library. The
-auto-restart behaviour makes this more likely than it was before, so a recovery
-command that adopts orphaned segment directories is the obvious next piece of work.
+**A restart part-way through an operation loses the in-memory session.** The segments
+survive in `segments/` and each is a valid MP4, but nothing joins or catalogues them.
+`repaircam/recovery.py` and `cli.py recover` adopt those orphans — see section 10.
 
-## 10. Open items
+## 10. Recovering orphaned footage
+
+`recovery.py` finds segment folders that never became a clip — a folder only survives
+there if Done was never reached — and files them through the *same* `finalise_session`
+path as a normal Done, so a rescued clip is indistinguishable from an ordinary one
+apart from `"recovered": true` in its sidecar.
+
+The stakes are the opposite of the rest of the system: recovery only ever touches
+footage that already exists and cannot be re-recorded. So it is built to refuse rather
+than risk:
+
+- **A failed join keeps the segments.** Files are deleted only after the join succeeds.
+  Half-recovered footage that has been deleted is worse than footage still orphaned, and
+  a failure (usually a missing ffmpeg) stays retryable.
+- **A folder written to recently is left alone.** Joining a file ffmpeg is still writing
+  would corrupt it, so anything touched within 120s is skipped unless `--force`.
+- **One bad folder does not stop the rest** — they are independent operations that happen
+  to share a fate.
+- **Listing is the default.** `recover` shows what it found and changes nothing;
+  `recover --all` acts.
+- **Rescued clips are unlabelled**, because nobody said what job they were for. The
+  library already surfaces unlabelled clips, which is the nudge to tag them.
+- **Start time comes from the folder name**, which is the recording's start; the sidecar
+  marks it `started_at_is_estimated` because nobody pressed Done to confirm the end.
+- **A bench removed from cameras.yaml still recovers.** The footage is no less real; the
+  sidecar records that the camera is no longer configured.
+
+The `/status` page lists orphans, because they appear in no other page — they are not in
+the library, having never become clips.
+
+## 11. Open items
 
 - **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
   enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
-- **Recover orphaned segments.** A restart mid-operation leaves valid segment MP4s in
-  `segments/` that nothing joins or catalogues. See section 9.
 - **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
 - **Phase 5** as above.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from

@@ -183,10 +183,36 @@ sudo systemctl restart repaircam
 ```
 
 > **One thing to know.** If the machine reboots or the service restarts *while a
-> technician is part-way through an operation*, the finished pieces are kept in
-> `~/repaircam-data/segments/` but they are **not** joined into a clip and will not
-> appear in the library. Nothing is deleted, but that operation has to be recorded
-> again. Ask the technician to press **Done** before the box is shut down.
+> technician is part-way through an operation*, that recording is not saved as a clip
+> automatically. Nothing is lost — see **Rescuing unsaved footage** below.
+
+---
+
+## Rescuing unsaved footage
+
+If the recorder restarts part-way through an operation, the video is still on disk but
+was never joined into a clip, so it does not appear in the Library. The **Status** page
+tells you when this has happened.
+
+To see whether there is any:
+
+```bash
+.venv/bin/python -m repaircam.cli recover
+```
+
+This only *looks* — it changes nothing. If it finds something, save it with:
+
+```bash
+.venv/bin/python -m repaircam.cli recover --all
+```
+
+Each rescued recording becomes a normal clip in the Library, **without a job label** —
+nobody ever told RepairCam what job it was for. Open it in the Library and fill in the
+job details so it stays useful.
+
+> If it says a recording *"may still be recording"*, that is the safety check doing its
+> job: joining a video while it is still being written would damage it. Wait a minute
+> and run it again. Only add `--force` if you are certain nothing is recording.
 
 ---
 
@@ -203,6 +229,8 @@ Run these from the `repaircam` folder.
 | What has been recorded | `.venv/bin/python -m repaircam.cli list` |
 | Details of one clip | `.venv/bin/python -m repaircam.cli info 12` |
 | Add a job label afterwards | `.venv/bin/python -m repaircam.cli relabel 12 --mo WH/MO/42` |
+| Check for unsaved footage | `.venv/bin/python -m repaircam.cli recover` |
+| Save unsaved footage | `.venv/bin/python -m repaircam.cli recover --all` |
 | Start the web app | `.venv/bin/python -m repaircam.cli web` |
 
 ---

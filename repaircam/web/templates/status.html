@@ -27,6 +27,35 @@
   <dd>{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB</dd>
 </dl>
 
+{% if orphans %}
+<h2 class="section">Unsaved footage</h2>
+<div class="flash flash-error">
+  <p><b>{{ orphans|length }} recording{{ '' if orphans|length == 1 else 's' }}
+     ({{ orphan_mb }} MB) {{ 'was' if orphans|length == 1 else 'were' }} never saved as
+     {{ 'a clip' if orphans|length == 1 else 'clips' }}.</b></p>
+  <p class="small">
+    This happens when the recorder restarts while someone is part-way through an operation.
+    The video is safe on disk, but it is not in the Library. To save it, run this on the
+    recorder box:
+  </p>
+  <p><code>python3 -m repaircam.cli recover --all</code></p>
+</div>
+<table class="table">
+  <thead><tr><th>Bench</th><th>Started</th><th>Pieces</th><th>Size</th></tr></thead>
+  <tbody>
+    {% for orphan in orphans %}
+    <tr>
+      <td><b>{{ orphan.work_center }}</b></td>
+      <td class="muted">{{ orphan.started_iso.replace('T', ' ')[:19] }}
+        {%- if orphan.started_estimated %} <span class="pill warn">approx</span>{% endif %}</td>
+      <td class="muted">{{ orphan.segments|length }}</td>
+      <td class="muted">{{ orphan.size_mb }} MB</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <h2 class="section">Cameras</h2>
 {% if not checked %}
   <p class="muted">Testing every camera takes a few seconds.</p>

@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
+from typing import Callable
 
 from . import SCHEMA_VERSION, config, ffmpeg
 from .backends import CaptureBackend, CaptureError, Segment, build_backend
@@ -338,66 +339,103 @@ class Recorder:
 
     def _finalise(self, session: Session, usable: list[Segment]) -> Recording:
         """Join segments, write the sidecar, insert the catalogue row."""
-        day = datetime.fromtimestamp(session.started_at, tz=timezone.utc).strftime("%Y-%m-%d")
-        dest_dir = self.data_root / "recordings" / day
-        dest = dest_dir / session.clip_name()
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        if dest.exists():  # two operations started in the same second
-            dest = dest.with_name(f"{dest.stem}_{int(time.time() * 1000) % 1000:03d}.mp4")
-
-        self.backend.concat(usable, dest)
-        if session.segment_dir:
-            _remove_dir_if_empty(session.segment_dir)
-
-        media = _media_summary(dest)
-        # Prefer the container's own duration; fall back to wall-clock if
-        # ffprobe is unavailable.
-        duration = media.get("duration_s") or round(session.recorded_seconds, 2)
-        relative = dest.relative_to(self.data_root).as_posix()
-
-        recording = Recording(
-            work_center=self.work_center,
+        return finalise_session(
+            session,
+            usable,
+            data_root=self.data_root,
+            catalogue=self.catalogue,
+            concat=self.backend.concat,
+            camera_info=self.backend.describe(),
             camera_name=self.camera.name if self.camera else "",
-            path=relative,
-            started_at=session.started_iso,
-            ended_at=utcnow(),
-            duration_s=duration,
-            segments=len(usable),
-            size_bytes=dest.stat().st_size if dest.exists() else 0,
-            width=media.get("width"),
-            height=media.get("height"),
-            frame_rate=media.get("frame_rate"),
-            video_codec=media.get("video_codec") or "",
-            audio_codec=media.get("audio_codec") or "",
-            labels=session.labels,
         )
-
-        sidecar = write_sidecar(
-            dest,
-            {
-                "schema_version": SCHEMA_VERSION,
-                "clip": relative,
-                "work_center": self.work_center,
-                "camera": self.backend.describe(),
-                "job": session.labels.as_dict(),
-                "recorded": {
-                    "started_at": session.started_iso,
-                    "ended_at": recording.ended_at,
-                    "duration_s": duration,
-                    "segments": len(usable),
-                    "segment_durations_s": [round(s.duration, 2) for s in usable],
-                },
-                "media": media,
-                "recorder": {"version": _package_version(), "host": _hostname()},
-            },
-        )
-        recording.sidecar_path = sidecar.relative_to(self.data_root).as_posix()
-        return self.catalogue.add(recording)
 
     def _reset(self) -> None:
         self._session = None
         self._capture = None
         self._state = State.IDLE
+
+
+# --------------------------------------------------------------------------
+# Turning a finished session into a filed clip
+# --------------------------------------------------------------------------
+
+
+def finalise_session(
+    session: Session,
+    usable: list[Segment],
+    *,
+    data_root: Path,
+    catalogue: Catalogue,
+    concat: Callable[[list[Segment], Path], Path],
+    camera_info: dict,
+    camera_name: str = "",
+    recovered: bool = False,
+) -> Recording:
+    """Join a session's segments into one clip, describe it, and file it.
+
+    Shared by the normal Done path and by recovery of orphaned segments, so a
+    recovered clip is indistinguishable from a normal one apart from the
+    ``recovered`` flag in its sidecar.
+    """
+    day = datetime.fromtimestamp(session.started_at, tz=timezone.utc).strftime("%Y-%m-%d")
+    dest_dir = data_root / "recordings" / day
+    dest = dest_dir / session.clip_name()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if dest.exists():  # two operations started in the same second
+        dest = dest.with_name(f"{dest.stem}_{int(time.time() * 1000) % 1000:03d}.mp4")
+
+    concat(usable, dest)
+    if session.segment_dir:
+        _remove_dir_if_empty(session.segment_dir)
+
+    media = _media_summary(dest)
+    # Prefer the container's own duration; fall back to wall-clock if ffprobe
+    # is unavailable.
+    duration = media.get("duration_s") or round(session.recorded_seconds, 2)
+    relative = dest.relative_to(data_root).as_posix()
+
+    recording = Recording(
+        work_center=session.work_center,
+        camera_name=camera_name,
+        path=relative,
+        started_at=session.started_iso,
+        ended_at=utcnow(),
+        duration_s=duration,
+        segments=len(usable),
+        size_bytes=dest.stat().st_size if dest.exists() else 0,
+        width=media.get("width"),
+        height=media.get("height"),
+        frame_rate=media.get("frame_rate"),
+        video_codec=media.get("video_codec") or "",
+        audio_codec=media.get("audio_codec") or "",
+        labels=session.labels,
+    )
+
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "clip": relative,
+        "work_center": session.work_center,
+        "camera": camera_info,
+        "job": session.labels.as_dict(),
+        "recorded": {
+            "started_at": session.started_iso,
+            "ended_at": recording.ended_at,
+            "duration_s": duration,
+            "segments": len(usable),
+            "segment_durations_s": [round(s.duration, 2) for s in usable],
+        },
+        "media": media,
+        "recorder": {"version": _package_version(), "host": _hostname()},
+    }
+    if recovered:
+        # Say so honestly: the start time is inferred from the segment folder,
+        # and nobody pressed Done on this clip.
+        payload["recovered"] = True
+        payload["recorded"]["started_at_is_estimated"] = True
+
+    sidecar = write_sidecar(dest, payload)
+    recording.sidecar_path = sidecar.relative_to(data_root).as_posix()
+    return catalogue.add(recording)
 
 
 # --------------------------------------------------------------------------
