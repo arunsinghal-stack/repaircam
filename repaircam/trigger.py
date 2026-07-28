@@ -8,8 +8,8 @@ driving the recorders to match.
 drops, tokens expire. None of that may stop the shop recording, so every failure
 here is logged and skipped, and the web UI keeps working exactly as before.
 
-Not switched on yet: saar-seva's endpoints do not exist. See
-docs/PHASE5-CONTRACT.md.
+Switched off until saarseva.yaml exists and saar-seva has REPAIRCAM_API_KEY set.
+See docs/PHASE5-CONTRACT.md.
 """
 
 from __future__ import annotations

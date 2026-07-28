@@ -9,7 +9,8 @@
 #
 # Before this works, two things must also be true:
 #   1. saar-seva has REPAIRCAM_API_KEY set (same token as below), otherwise its
-#      endpoints answer 503 to everyone.
+#      endpoints answer 503 to everyone. The endpoints themselves are merged to
+#      saar-seva's staging branch; check they are deployed to the URL below.
 #   2. each bench in cameras.yaml has an odoo_workcenter_id.
 # See docs/PHASE5-CONTRACT.md.
 

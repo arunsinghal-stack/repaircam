@@ -8,8 +8,9 @@ that keeps the cameras safe. See docs/PHASE5-CONTRACT.md.
 Built on ``urllib`` from the standard library rather than ``requests`` so the
 recorder box needs nothing extra installed.
 
-Nothing here is wired up yet: saar-seva's two endpoints do not exist. This is the
-RepairCam half, ready for when they do.
+Both halves exist: saar-seva's `/trc/active` and `/trc/recordings` are merged to
+its **staging** branch. This stays switched off until saarseva.yaml is created AND
+saar-seva has REPAIRCAM_API_KEY set (without it those endpoints 503 everyone).
 """
 
 from __future__ import annotations

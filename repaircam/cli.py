@@ -222,7 +222,7 @@ def cmd_trigger(args: argparse.Namespace) -> int:
     """Test or run the automatic trigger that starts recording from saar-seva.
 
     Nothing is switched on until repaircam/saarseva.yaml exists, and saar-seva's
-    endpoints do not exist yet — see docs/PHASE5-CONTRACT.md.
+    saar-seva also needs REPAIRCAM_API_KEY set — see docs/PHASE5-CONTRACT.md.
     """
     from .recorder import RecorderPool
     from .trigger import Trigger
@@ -234,7 +234,7 @@ def cmd_trigger(args: argparse.Namespace) -> int:
               f"{saarseva.config_file()}")
         print(f"\nWhen you fill it in, this recorder's address is probably:")
         print(f"    link_base: \"{saarseva.default_link_base()}\"")
-        print("\nNote: saar-seva does not have the required endpoints yet.")
+        print("\nNote: saar-seva also needs REPAIRCAM_API_KEY set, or it will answer 503.")
         return 0
 
     config = saarseva.load_config()

@@ -66,9 +66,10 @@ def _maybe_start_trigger(app: Flask):
     """Start the saar-seva auto-trigger, if it has been set up.
 
     Off unless repaircam/saarseva.yaml exists, which is the normal state today:
-    saar-seva's endpoints do not exist yet, and technicians start recordings
-    themselves. A broken trigger must never prevent the web UI from starting —
-    recording by hand has to keep working no matter what the cloud is doing.
+    saar-seva has the endpoints but REPAIRCAM_API_KEY is not set on it yet, so
+    technicians start recordings themselves. A broken trigger must never prevent
+    the web UI from starting — recording by hand has to keep working no matter
+    what the cloud is doing.
     """
     from .. import saarseva
 

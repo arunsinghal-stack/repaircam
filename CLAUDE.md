@@ -57,7 +57,9 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Phase 5 (BOTH halves built, not yet run for real):** RepairCam side = `saarseva.py`
   (polling client, stdlib urllib) + `trigger.py` + `cli.py trigger`. saar-seva side =
   `GET /trc/active` + `POST /trc/recordings` in `backend/app/routers/trc.py` of
-  `arunsinghal-stack/saar-seva-app` (add that repo to the session to work on it).
+  `arunsinghal-stack/saar-seva-app` — MERGED to its `staging` branch in PR #461
+  (add that repo to the session to work on it; note staging -> main is a separate
+  "prod cutover" PR there).
   Contract + how to switch it on: docs/PHASE5-CONTRACT.md.
   Key facts: benches join on **`odoo_workcenter_id`** (in cameras.yaml), NOT a "WC2" code —
   saar-seva has no such code. Identity of a recording is saar-seva's `time_log_id`;
