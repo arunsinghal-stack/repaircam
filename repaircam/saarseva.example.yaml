@@ -7,9 +7,11 @@
 # While this file does not exist, the auto-trigger is simply OFF and technicians
 # start and stop recordings themselves in the web UI. Everything still works.
 #
-# NOTE: the two endpoints below do not exist in saar-seva yet. Until they are
-# built, turning this on will only fill the log with "404 does not exist on the
-# server yet". See docs/PHASE5-CONTRACT.md.
+# Before this works, two things must also be true:
+#   1. saar-seva has REPAIRCAM_API_KEY set (same token as below), otherwise its
+#      endpoints answer 503 to everyone.
+#   2. each bench in cameras.yaml has an odoo_workcenter_id.
+# See docs/PHASE5-CONTRACT.md.
 
 saarseva:
   # Where saar-seva's backend lives.
@@ -27,8 +29,9 @@ saarseva:
   # rude to a sleeping Render instance.
   poll_seconds: 5
 
-  # Only these benches are auto-triggered. Leave empty for every bench in
-  # cameras.yaml. Benches with no camera should not be listed.
+  # Only these benches are auto-triggered, by bench code. Leave empty for every
+  # bench in cameras.yaml that has an odoo_workcenter_id. A bench without that
+  # id is never auto-triggered, whatever is listed here.
   work_centers: ["WC2"]
 
   # Set to false to keep the settings but stop polling.

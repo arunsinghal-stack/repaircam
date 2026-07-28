@@ -25,6 +25,12 @@ cameras:
     # transcodes just the audio to AAC. Set false to record video only.
     has_audio: true
 
+    # Which Odoo work centre this bench is. Only needed for the automatic
+    # saar-seva trigger; leave it out and the bench simply never auto-records.
+    # Find the number in Odoo: Manufacturing > Configuration > Work Centers,
+    # open the bench, and read the id at the end of the browser address bar.
+    odoo_workcenter_id: 12
+
     notes: "Bitrate capped at 4096 kbps in the VIGI app."
 
   # Add the next bench by copying the block above:

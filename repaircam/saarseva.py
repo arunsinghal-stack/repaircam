@@ -135,30 +135,36 @@ def is_configured(path: Path | None = None) -> bool:
 
 @dataclass(frozen=True)
 class ActiveOperation:
-    """One operation a technician is working on right now."""
+    """One timer a technician currently has running in saar-seva."""
 
-    work_center: str
+    #: saar-seva's repair_time_log id — see `key`.
+    time_log_id: str = ""
+    #: Odoo work-centre id. This, not a name, is how a bench is identified;
+    #: cameras.yaml carries the same number per bench.
+    workcenter_id: int | None = None
+    workcenter_name: str = ""
+    job_id: str = ""
     mo_name: str = ""
     operation: str = ""
     device: str = ""
     imei: str = ""
     technician: str = ""
     workorder_id: str = ""
-    job_id: str = ""
+    object_type: str = ""  # "mo" or "repair_order"
     started_at: str = ""
 
     @property
     def key(self) -> str:
-        """Identity of this operation, stable for its whole life.
+        """Identity of this recording session, stable from Start to Stop.
 
-        The work order id when saar-seva provides one, because it is a real
-        primary key; otherwise MO + operation. If this ever changes mid-operation
-        RepairCam will cut the clip and start another, so the contract calls it
-        out explicitly.
+        The time-log id is exactly right: saar-seva creates one per Start and
+        closes it on Stop, and never reuses it. One clip per timer session.
         """
-        if self.workorder_id:
-            return f"wo:{self.workorder_id}"
-        return f"mo:{self.mo_name}|op:{self.operation}"
+        if self.time_log_id:
+            return f"log:{self.time_log_id}"
+        # Older/partial responses: fall back to something stable-ish rather
+        # than treating every poll as a new operation.
+        return f"job:{self.job_id}|op:{self.operation}"
 
     def labels(self) -> JobLabels:
         return JobLabels(
@@ -168,6 +174,14 @@ class ActiveOperation:
             imei=self.imei,
             technician=self.technician,
         )
+
+
+def _int(value: Any) -> int | None:
+    """Coerce a JSON value to an int, or None if it is not one."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _text(value: Any) -> str:
@@ -180,9 +194,8 @@ def _text(value: Any) -> str:
 def parse_active(payload: Any) -> list[ActiveOperation]:
     """Read the /trc/active response.
 
-    Accepts either ``{"active": [...]}`` or a bare list, so saar-seva can use
-    whichever shape fits its existing handlers. Entries without a work center are
-    dropped: without one there is no camera and nothing to record.
+    Accepts either ``{"active": [...]}`` or a bare list. Entries with no work
+    centre are dropped: without one there is no bench and so no camera.
     """
     if isinstance(payload, dict):
         rows = payload.get("active", payload.get("operations", payload.get("results", [])))
@@ -195,20 +208,23 @@ def parse_active(payload: Any) -> list[ActiveOperation]:
     for row in rows:
         if not isinstance(row, dict):
             continue
-        work_center = _text(row.get("work_center") or row.get("workcenter"))
-        if not work_center:
-            log.warning("ignoring an active operation with no work_center: %s", row)
+        workcenter_id = _int(row.get("workcenter_id") or row.get("odoo_workcenter_id"))
+        if workcenter_id is None:
+            log.warning("ignoring an active operation with no workcenter_id: %s", row)
             continue
         operations.append(
             ActiveOperation(
-                work_center=work_center,
-                mo_name=_text(row.get("mo_name") or row.get("mo")),
-                operation=_text(row.get("operation") or row.get("operation_name")),
-                device=_text(row.get("device") or row.get("product")),
+                time_log_id=_text(row.get("time_log_id")),
+                workcenter_id=workcenter_id,
+                workcenter_name=_text(row.get("workcenter_name")),
+                job_id=_text(row.get("job_id")),
+                mo_name=_text(row.get("mo_name") or row.get("odoo_ref")),
+                operation=_text(row.get("operation") or row.get("step")),
+                device=_text(row.get("device") or row.get("product_name")),
                 imei=_text(row.get("imei") or row.get("serial")),
-                technician=_text(row.get("technician") or row.get("user")),
-                workorder_id=_text(row.get("workorder_id") or row.get("wo_id")),
-                job_id=_text(row.get("job_id") or row.get("job")),
+                technician=_text(row.get("technician")),
+                workorder_id=_text(row.get("workorder_id")),
+                object_type=_text(row.get("object_type")),
                 started_at=_text(row.get("started_at")),
             )
         )
@@ -265,11 +281,15 @@ class SaarSevaClient:
 
     # -- contract -----------------------------------------------------------
 
-    def fetch_active(self) -> list[ActiveOperation]:
-        """Which operations are being worked on right now."""
+    def fetch_active(self, workcenter_ids: list[int] | None = None) -> list[ActiveOperation]:
+        """Which operations are being worked on right now.
+
+        ``workcenter_ids`` limits the answer to benches that have a camera, so
+        saar-seva does not describe work RepairCam could never record.
+        """
         params = {}
-        if self.config.work_centers:
-            params["work_centers"] = ",".join(self.config.work_centers)
+        if workcenter_ids:
+            params["workcenters"] = ",".join(str(i) for i in sorted(set(workcenter_ids)))
         return parse_active(self._request("GET", "/trc/active", params=params or None))
 
     def post_recording(self, recording: Recording, *, operation: ActiveOperation | None = None) -> bool:
@@ -286,24 +306,23 @@ class SaarSevaClient:
 
         body = {
             "recording_id": recording.id,
-            "mo_name": recording.labels.mo_name,
-            "work_center": recording.work_center,
-            "operation": recording.labels.operation,
-            "imei": recording.labels.imei,
             "url": f"{self.config.link_base}/clip/{recording.id}",
             "duration_s": recording.duration_s,
             "recorded_at": recording.started_at,
         }
-        if operation and operation.workorder_id:
-            body["workorder_id"] = operation.workorder_id
+        if operation:
+            # The time log is what saar-seva keys the chatter post on, and what
+            # makes a retry idempotent there.
+            body["time_log_id"] = operation.time_log_id
+            body["job_id"] = operation.job_id
 
         self._request("POST", "/trc/recordings", body=body)
         return True
 
-    def check(self) -> tuple[bool, str]:
+    def check(self, workcenter_ids: list[int] | None = None) -> tuple[bool, str]:
         """Is saar-seva reachable and is the token accepted? For the status page."""
         try:
-            active = self.fetch_active()
+            active = self.fetch_active(workcenter_ids)
         except SaarSevaError as exc:
             return False, str(exc)
         return True, f"OK — {len(active)} operation(s) running"

@@ -54,12 +54,17 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Recovery + deploy (DONE, in repo):** `deploy/` installs the web UI as a systemd
   service; `repaircam/recovery.py` + `cli.py recover` re-file segments a restart left
   orphaned (listed on the status page). Note Phases 3 and 4 are undefined anywhere.
-- **Phase 5 (RepairCam half DONE, saar-seva half NOT):** `saarseva.py` (polling client, stdlib
-  urllib) + `trigger.py` (reconciles recorders against `GET /trc/active`) + `cli.py trigger`.
-  Off until `repaircam/saarseva.yaml` exists (gitignored; template alongside it).
-  **Blocked on saar-seva:** `GET /trc/active` and `POST /trc/recordings` do not exist yet —
-  the exact contract for them is docs/PHASE5-CONTRACT.md. That work is in the
-  `arunsinghal-stack/saar-seva-app` repo, which must be added to the session first.
+- **Phase 5 (BOTH halves built, not yet run for real):** RepairCam side = `saarseva.py`
+  (polling client, stdlib urllib) + `trigger.py` + `cli.py trigger`. saar-seva side =
+  `GET /trc/active` + `POST /trc/recordings` in `backend/app/routers/trc.py` of
+  `arunsinghal-stack/saar-seva-app` (add that repo to the session to work on it).
+  Contract + how to switch it on: docs/PHASE5-CONTRACT.md.
+  Key facts: benches join on **`odoo_workcenter_id`** (in cameras.yaml), NOT a "WC2" code —
+  saar-seva has no such code. Identity of a recording is saar-seva's `time_log_id`;
+  **one clip per timer session**, so a Pause in saar-seva ends the clip. Links go to
+  `mrp.production` OR `repair.order` chatter depending on `odoo_object_type`.
+  Off until `repaircam/saarseva.yaml` exists AND saar-seva has `REPAIRCAM_API_KEY` set
+  (without it those endpoints 503 everyone).
 
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.

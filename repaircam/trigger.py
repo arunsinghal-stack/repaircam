@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from . import config as camera_config
 from .catalogue import Catalogue, Recording
 from .recorder import RecorderError, RecorderPool, State
 from .saarseva import ActiveOperation, SaarSevaClient, SaarSevaConfig, SaarSevaError
@@ -82,11 +83,48 @@ class Trigger:
         # ...and, once filed, the operation behind a clip, so its work order id
         # can go with the link when it is posted.
         self._operations: dict[int, ActiveOperation] = {}
+        # Odoo work-centre id -> bench code. saar-seva talks in Odoo ids;
+        # everything else here talks in bench codes.
+        self._bench_by_workcenter: dict[int, str] = {}
+        self.reload_benches()
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.last_result: TickResult | None = None
         self.last_tick_at: float = 0.0
+
+    def reload_benches(self) -> dict[int, str]:
+        """Rebuild the work-centre -> bench map from cameras.yaml.
+
+        Benches with no ``odoo_workcenter_id`` are simply absent, which is how a
+        camera opts out of being auto-triggered.
+        """
+        mapping: dict[int, str] = {}
+        try:
+            cameras = camera_config.load_cameras()
+        except Exception as exc:  # a bad cameras.yaml must not kill the loop
+            log.warning("could not read cameras.yaml for the trigger: %s", exc)
+            return self._bench_by_workcenter
+
+        allowed = set(self.config.work_centers)
+        for work_center, camera in cameras.items():
+            if allowed and work_center not in allowed:
+                continue
+            if camera.odoo_workcenter_id is None:
+                continue
+            mapping[camera.odoo_workcenter_id] = work_center
+
+        if not mapping:
+            log.warning(
+                "no bench in cameras.yaml has an odoo_workcenter_id, so nothing "
+                "can be auto-triggered"
+            )
+        self._bench_by_workcenter = mapping
+        return mapping
+
+    @property
+    def workcenter_ids(self) -> list[int]:
+        return sorted(self._bench_by_workcenter)
 
     # -- one poll -----------------------------------------------------------
 
@@ -94,7 +132,7 @@ class Trigger:
         """Poll once and make the recorders match. Never raises."""
         result = TickResult()
         try:
-            operations = self.client.fetch_active()
+            operations = self.client.fetch_active(self.workcenter_ids)
         except SaarSevaError as exc:
             # Crucially, do not touch any recorder. A failed poll must never be
             # read as "nothing is running" — that would end every recording in
@@ -122,22 +160,27 @@ class Trigger:
         return result
 
     def _by_bench(self, operations: list[ActiveOperation]) -> dict[str, ActiveOperation]:
-        """One operation per bench, limited to benches that have a camera."""
-        allowed = set(self.config.work_centers)
+        """One operation per bench, keyed by bench code.
+
+        Operations on work centres with no camera are dropped: saar-seva knows
+        about every work centre in the shop, RepairCam only about the ones with
+        a camera pointed at them.
+        """
         wanted: dict[str, ActiveOperation] = {}
         for operation in operations:
-            if allowed and operation.work_center not in allowed:
+            work_center = self._bench_by_workcenter.get(operation.workcenter_id or -1)
+            if work_center is None:
                 continue
-            if operation.work_center in wanted:
-                # Two operations on one bench is a saar-seva data problem; one
-                # camera cannot record two jobs. Keep the first and say so.
+            if work_center in wanted:
+                # Two technicians clocked onto one bench. One camera cannot
+                # record two jobs, so keep the first and say so.
                 log.warning(
                     "saar-seva reports two operations on %s; recording only %s",
-                    operation.work_center,
-                    wanted[operation.work_center].key,
+                    work_center,
+                    wanted[work_center].key,
                 )
                 continue
-            wanted[operation.work_center] = operation
+            wanted[work_center] = operation
         return wanted
 
     def _reconcile_start(
@@ -265,6 +308,7 @@ class Trigger:
             "base_url": self.config.base_url,
             "poll_seconds": self.config.poll_seconds,
             "owned": dict(self._owned),
+            "benches": dict(self._bench_by_workcenter),
             "last_tick_at": self.last_tick_at,
             "seconds_since_tick": round(time.time() - self.last_tick_at, 1) if self.last_tick_at else None,
             "ok": result.ok if result else None,

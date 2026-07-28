@@ -15,6 +15,7 @@ import pytest
 from repaircam.catalogue import JobLabels, Recording, utcnow
 from repaircam.config import ConfigError
 from repaircam.saarseva import (
+    ActiveOperation,
     SaarSevaClient,
     SaarSevaConfig,
     SaarSevaError,
@@ -121,10 +122,10 @@ def test_the_token_is_never_shown(tmp_path: Path):
 
 def test_fetch_active_calls_the_right_url(config):
     opener = FakeOpener({"active": []})
-    SaarSevaClient(config, opener=opener).fetch_active()
+    SaarSevaClient(config, opener=opener).fetch_active([12, 13])
 
     assert opener.last.full_url.startswith("https://example.test/trc/active")
-    assert "work_centers=WC2" in opener.last.full_url
+    assert "workcenters=12%2C13" in opener.last.full_url
 
 
 def test_fetch_active_sends_the_token(config):
@@ -136,20 +137,22 @@ def test_fetch_active_sends_the_token(config):
 
 def test_fetch_active_returns_operations(config):
     opener = FakeOpener(
-        {"active": [{"work_center": "WC2", "mo_name": "WH/MO/7", "operation": "Battery"}]}
+        {"active": [{"workcenter_id": 12, "mo_name": "WH/MO/7", "operation": "Battery",
+                     "time_log_id": "abc"}]}
     )
     operations = SaarSevaClient(config, opener=opener).fetch_active()
 
     assert len(operations) == 1
     assert operations[0].labels().mo_name == "WH/MO/7"
+    assert operations[0].key == "log:abc"
 
 
-def test_no_work_center_filter_when_none_configured():
-    config = SaarSevaConfig(base_url="https://example.test", work_centers=[])
+def test_no_bench_filter_when_none_given():
+    config = SaarSevaConfig(base_url="https://example.test")
     opener = FakeOpener({"active": []})
     SaarSevaClient(config, opener=opener).fetch_active()
 
-    assert "work_centers" not in opener.last.full_url
+    assert "workcenters" not in opener.last.full_url
 
 
 # --------------------------------------------------------------------------
@@ -177,10 +180,21 @@ def test_post_recording_sends_a_link_not_a_video(config):
 
     body = json.loads(opener.last.data)
     assert body["url"] == "http://192.168.0.50:8080/clip/41"
-    assert body["mo_name"] == "WH/MO/42"
     assert body["recording_id"] == 41
     assert body["duration_s"] == 412.5
     assert "video" not in body and "data" not in body
+
+
+def test_post_recording_identifies_the_timer_it_belongs_to(config):
+    """saar-seva keys the chatter post on the time log, and that is what makes
+    a retry idempotent there."""
+    opener = FakeOpener({})
+    operation = ActiveOperation(time_log_id="3f2b", job_id="9a1c", workcenter_id=12)
+    SaarSevaClient(config, opener=opener).post_recording(recording(), operation=operation)
+
+    body = json.loads(opener.last.data)
+    assert body["time_log_id"] == "3f2b"
+    assert body["job_id"] == "9a1c"
 
 
 def test_post_recording_uses_post_and_json(config):
@@ -228,7 +242,7 @@ def test_a_non_json_response_is_refused(config):
 
 
 def test_check_reports_success(config):
-    opener = FakeOpener({"active": [{"work_center": "WC2"}]})
+    opener = FakeOpener({"active": [{"workcenter_id": 12}]})
     ok, message = SaarSevaClient(config, opener=opener).check()
     assert ok is True
     assert "1 operation" in message
