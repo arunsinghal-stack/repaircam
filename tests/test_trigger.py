@@ -17,6 +17,7 @@ from repaircam.catalogue import Catalogue, JobLabels, Recording, utcnow
 from repaircam.recorder import Recorder, RecorderPool, State
 from repaircam.saarseva import (
     KIND_PACKING,
+    KIND_REPAIR,
     ActiveOperation,
     SaarSevaConfig,
     SaarSevaError,
@@ -250,7 +251,9 @@ def test_a_failed_poll_never_stops_a_recording(trigger, client, pool):
     trigger.tick()
     assert pool.get("WC2").state is State.RECORDING
 
+    # Nothing answers — the real outage, not one endpoint being unwell.
     client.fail_with = "could not reach saar-seva"
+    client.packing_fail_with = "could not reach saar-seva"
     result = trigger.tick()
 
     assert result.ok is False
@@ -679,9 +682,9 @@ def test_packing_endpoints_not_deployed_yet_does_not_break_repair(trigger, clien
     assert pool.get("WC2").state is State.RECORDING
 
 
-def test_a_real_packing_failure_still_stops_the_tick(trigger, client, pool):
-    """Only a missing endpoint is tolerated. A genuine outage must not be read
-    as 'no packing is running' while repairs keep being trusted."""
+def test_a_packing_outage_never_ends_a_packing_clip(trigger, client, pool):
+    """A missing endpoint is tolerated silently; a genuine outage must not be
+    read as 'no packing is running'. Either way the clip keeps rolling."""
     client.active_packing = [pack(12)]
     trigger.tick()
     assert pool.get("WC2").state is State.RECORDING
@@ -689,9 +692,53 @@ def test_a_real_packing_failure_still_stops_the_tick(trigger, client, pool):
     client.packing_fail_with = "could not reach saar-seva"
     result = trigger.tick()
 
-    assert result.ok is False
     assert result.finished == []
     assert pool.get("WC2").state is State.RECORDING
+    assert result.partial == [KIND_PACKING]
+
+
+def test_a_packing_outage_does_not_delay_a_repair(trigger, client, pool):
+    """The coupling this replaced: any packing failure aborted the whole tick,
+    so a broken packing endpoint quietly stopped repairs from being filmed —
+    the technician pressed Start and nothing happened."""
+    client.packing_fail_with = "500 Internal Server Error"
+    client.packing_fail_status = 500
+    client.active = [op(12)]
+
+    result = trigger.tick()
+
+    assert result.started == ["WC2"]
+    assert pool.get("WC2").state is State.RECORDING
+    assert result.partial == [KIND_PACKING]
+    assert "500" in result.error
+
+
+def test_a_repair_outage_does_not_disturb_packing(trigger, client, pool):
+    """And the same the other way round — neither integration owns the other."""
+    client.active_packing = [pack(13)]
+    trigger.tick()
+    assert pool.get("WC3").state is State.RECORDING
+
+    client.fail_with = "could not reach saar-seva"
+    result = trigger.tick()
+
+    assert pool.get("WC3").state is State.RECORDING
+    assert result.partial == [KIND_REPAIR]
+
+
+def test_a_bench_is_still_finished_when_its_own_poll_answers(trigger, client, pool):
+    """Leaving benches alone must not become 'never finish anything'."""
+    client.active = [op(12)]
+    client.active_packing = [pack(13)]
+    trigger.tick()
+
+    client.packing_fail_with = "could not reach saar-seva"
+    client.active = []  # the repair timer was stopped; packing is just quiet
+    result = trigger.tick()
+
+    assert result.finished == ["WC2"]
+    assert pool.get("WC2").state is State.IDLE
+    assert pool.get("WC3").state is State.RECORDING  # untouched, as it must be
 
 
 def test_parses_the_real_pack_active_row():
@@ -778,6 +825,7 @@ def test_a_failed_poll_sends_no_heartbeat(trigger, client, pool):
     sent = len(client.heartbeats)
 
     client.fail_with = "could not reach saar-seva"
+    client.packing_fail_with = "could not reach saar-seva"
     trigger.tick()
 
     assert len(client.heartbeats) == sent

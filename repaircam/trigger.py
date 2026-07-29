@@ -24,6 +24,7 @@ from .catalogue import Catalogue, Recording
 from .recorder import RecorderError, RecorderPool, State
 from .saarseva import (
     KIND_PACKING,
+    KIND_REPAIR,
     ActiveOperation,
     SaarSevaClient,
     SaarSevaConfig,
@@ -46,6 +47,9 @@ class TickResult:
     #: Clips whose link saar-seva refused for good. Not a transient failure —
     #: nothing will retry these, so they have to be visible.
     links_failed: list[int] = field(default_factory=list)
+    #: Kinds of work whose poll did not answer this tick. Their benches were
+    #: deliberately left alone rather than treated as finished.
+    partial: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
 
     @property
@@ -67,6 +71,8 @@ class TickResult:
             bits.append(f"links posted: {len(self.links_posted)}")
         if self.links_failed:
             bits.append(f"links GIVEN UP ON: {len(self.links_failed)}")
+        if self.partial:
+            bits.append(f"NO ANSWER for {', '.join(self.partial)} — those benches left alone")
         return "; ".join(bits)
 
 
@@ -142,18 +148,21 @@ class Trigger:
     def tick(self) -> TickResult:
         """Poll once and make the recorders match. Never raises."""
         result = TickResult()
-        try:
-            operations = self._fetch_all()
-        except SaarSevaError as exc:
-            # Crucially, do not touch any recorder. A failed poll must never be
-            # read as "nothing is running" — that would end every recording in
-            # the shop the moment the internet hiccups.
+        operations, answered, error = self._fetch_all()
+
+        if not answered:
+            # Nothing answered, so we have no picture at all. Crucially, do not
+            # touch any recorder: a failed poll read as "nothing is running"
+            # would end every recording in the shop the moment the internet
+            # hiccups.
             result.ok = False
-            result.error = str(exc)
-            log.warning("saar-seva poll failed, leaving recorders alone: %s", exc)
+            result.error = error
+            log.warning("saar-seva poll failed, leaving recorders alone: %s", error)
             self._remember(result)
             return result
 
+        result.partial = sorted({KIND_REPAIR, KIND_PACKING} - answered)
+        result.error = error
         wanted = self._by_bench(operations)
         result.active = len(wanted)
 
@@ -161,8 +170,19 @@ class Trigger:
             for work_center, operation in wanted.items():
                 self._reconcile_start(work_center, operation, result)
             for work_center in list(self._owned):
-                if work_center not in wanted:
-                    self._finish(work_center, result, reason="no longer active")
+                if work_center in wanted:
+                    continue
+                # Only end a bench whose OWN kind of work we heard about. If the
+                # packing poll failed, a packing bench being absent from the
+                # answer means nothing — ending it there would cut a clip in
+                # half over an unrelated outage.
+                kind = self._kind_of(work_center)
+                if kind not in answered:
+                    log.debug(
+                        "%s left alone: the %s poll did not answer", work_center, kind
+                    )
+                    continue
+                self._finish(work_center, result, reason="no longer active")
 
         self._post_pending_links(result)
         # After reconciling, so what is reported is the state the benches are
@@ -179,21 +199,47 @@ class Trigger:
         """What saar-seva says is being recorded, across both integrations.
 
         Repair benches and packing benches are both Odoo work centres, so they
-        share one id space and one camera map. A failure in either poll raises
-        — a partial picture must never be mistaken for "nothing is running",
-        which would end every recording in the shop.
+        share one id space and one camera map.
+
+        Returns ``(operations, answered, error)`` — ``answered`` being the kinds
+        whose poll actually succeeded. A partial picture must never be mistaken
+        for "nothing is running", so the caller may only act on benches whose
+        own kind is in ``answered``. Reporting that per kind, rather than
+        failing the whole tick, is what stops a broken packing endpoint from
+        delaying every repair recording in the shop.
         """
         benches = self.workcenter_ids
-        operations = list(self.client.fetch_active(benches))
-        try:
-            operations += list(self.client.fetch_active_packing(benches))
-        except SaarSevaError as exc:
-            # A saar-seva without the packing endpoints answers 404. That is a
-            # deployment state, not a fault: keep the repair trigger working.
-            if exc.status != 404:
-                raise
-            log.debug("packing endpoints not deployed yet: %s", exc)
-        return operations
+        operations: list[ActiveOperation] = []
+        answered: set[str] = set()
+        errors: list[str] = []
+
+        for kind, fetch in (
+            (KIND_REPAIR, self.client.fetch_active),
+            (KIND_PACKING, self.client.fetch_active_packing),
+        ):
+            try:
+                operations += list(fetch(benches))
+            except SaarSevaError as exc:
+                if kind == KIND_PACKING and exc.status == 404:
+                    # A saar-seva without the packing endpoints. A deployment
+                    # state, not a fault, and not worth reporting every 5s.
+                    log.debug("packing endpoints not deployed yet: %s", exc)
+                    answered.add(kind)
+                    continue
+                log.warning("%s poll failed: %s", kind, exc)
+                errors.append(f"{kind}: {exc}")
+                continue
+            answered.add(kind)
+
+        return operations, answered, "; ".join(errors)
+
+    def _kind_of(self, work_center: str) -> str:
+        """Which integration owns this bench's current recording."""
+        operation = self._operation_by_bench.get(work_center)
+        if operation is not None:
+            return operation.kind
+        # Fall back to the ownership key, which is "<kind>:<session id>".
+        return (self._owned.get(work_center, "") or "").split(":", 1)[0] or KIND_REPAIR
 
     def _by_bench(self, operations: list[ActiveOperation]) -> dict[str, ActiveOperation]:
         """One operation per bench, keyed by bench code.

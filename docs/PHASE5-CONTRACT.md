@@ -225,6 +225,27 @@ run, and nothing in the UI said so.
 
 ---
 
+## Repair and packing fail separately
+
+Both polls happen on the same tick, and each reports whether it actually
+answered. The trigger then acts **only on benches whose own kind of work it
+heard about**:
+
+- **Nothing answered** — the real outage. No recorder is touched at all, and no
+  heartbeat is sent, so the technician's screen goes "unknown" rather than
+  keeping a stale light on.
+- **One answered** — its benches are started and finished normally; the other
+  kind's benches are left exactly as they are. A bench missing from an answer
+  that never arrived means nothing.
+- **Packing endpoints absent (404)** — a deployment state, not a fault. Treated
+  as a successful empty answer and not reported.
+
+This replaced an all-or-nothing rule where any packing failure aborted the whole
+tick. That was right about never ending a clip on a partial picture, and wrong
+about everything else: a broken packing endpoint quietly stopped repairs from
+being filmed, so a technician could press Start and simply not be recorded. The
+status page names the kind that did not answer.
+
 ## `POST /trc/recorder-heartbeat` — so a light on saar-seva can tell the truth
 
 **Not built on the saar-seva side yet.** RepairCam sends this already and treats a
