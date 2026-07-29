@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS recordings (
     audio_codec   TEXT    DEFAULT '',
     notes         TEXT    DEFAULT '',
     link_posted   INTEGER DEFAULT 0,
+    -- Why a link will never be posted. Set when saar-seva says it has no such
+    -- session: retrying that forever achieves nothing and, worse, blocks every
+    -- clip queued behind it.
+    link_error    TEXT    DEFAULT '',
     -- Which integration asked for this clip: '' (started by hand), 'repair'
     -- or 'packing'. source_ref is that system's own id for the session.
     -- Kept in the database, not just in memory, so a clip whose link has not
@@ -124,6 +128,7 @@ class Recording:
     #: right place even after a restart.
     source: str = ""
     source_ref: str = ""
+    link_error: str = ""
     created_at: str = field(default_factory=utcnow)
     labels: JobLabels = field(default_factory=JobLabels)
 
@@ -181,6 +186,7 @@ class Catalogue:
             for column, ddl in (
                 ("source", "ALTER TABLE recordings ADD COLUMN source TEXT DEFAULT ''"),
                 ("source_ref", "ALTER TABLE recordings ADD COLUMN source_ref TEXT DEFAULT ''"),
+                ("link_error", "ALTER TABLE recordings ADD COLUMN link_error TEXT DEFAULT ''"),
             ):
                 if column not in existing:
                     conn.execute(ddl)
@@ -207,6 +213,7 @@ class Catalogue:
             link_posted=row["link_posted"],
             source=(row["source"] if "source" in row.keys() else "") or "",
             source_ref=(row["source_ref"] if "source_ref" in row.keys() else "") or "",
+            link_error=(row["link_error"] if "link_error" in row.keys() else "") or "",
             created_at=row["created_at"],
             labels=JobLabels(
                 mo_name=row["mo_name"],
@@ -368,17 +375,47 @@ class Catalogue:
         return [self._to_recording(row) for row in rows]
 
     def list_unposted(self, limit: int = 10) -> list[Recording]:
-        """Clips whose link has not reached the Odoo MO chatter yet.
+        """Clips whose link has not reached Odoo yet, and still could.
 
-        Only labelled clips qualify: without an MO there is no chatter to post
-        to. Driving retries from here rather than from memory means a clip
-        finished just before a restart is still posted afterwards.
+        Only clips that came from an integration qualify — ``source`` and
+        ``source_ref`` both set. saar-seva matches a clip to a job by ITS OWN
+        session id, so a clip a technician started by hand in RepairCam has
+        nothing for it to match, however carefully the MO number was typed into
+        our form. Queueing those guaranteed a 404 on every poll, forever.
+
+        Clips that already failed permanently are excluded too, so one of them
+        cannot sit at the head of the queue and starve the rest.
+
+        Driving retries from here rather than from memory means a clip finished
+        just before a restart is still posted afterwards.
         """
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM recordings WHERE link_posted = 0"
-                "   AND (source != '' OR mo_name != '')"
+                "   AND link_error = ''"
+                "   AND source != '' AND source_ref != ''"
                 " ORDER BY id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._to_recording(row) for row in rows]
+
+    def mark_link_failed(self, recording_id: int, reason: str) -> None:
+        """Stop retrying a clip saar-seva will never accept, and say why.
+
+        The clip and its footage are untouched — only the automatic link post
+        gives up. The status page surfaces these so they are not lost silently.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET link_error=? WHERE id=?", (reason[:300], recording_id)
+            )
+
+    def list_link_failures(self, limit: int = 50) -> list[Recording]:
+        """Clips whose link could not be posted and will not be retried."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recordings WHERE link_error != '' AND link_posted = 0"
+                " ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [self._to_recording(row) for row in rows]

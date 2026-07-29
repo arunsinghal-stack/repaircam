@@ -43,11 +43,14 @@ class TickResult:
     started: list[str] = field(default_factory=list)
     finished: list[str] = field(default_factory=list)
     links_posted: list[int] = field(default_factory=list)
+    #: Clips whose link saar-seva refused for good. Not a transient failure —
+    #: nothing will retry these, so they have to be visible.
+    links_failed: list[int] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
-        return bool(self.started or self.finished or self.links_posted)
+        return bool(self.started or self.finished or self.links_posted or self.links_failed)
 
     def summary(self) -> str:
         if not self.ok:
@@ -62,6 +65,8 @@ class TickResult:
                 bits.append(f"{label}: {', '.join(items)}")
         if self.links_posted:
             bits.append(f"links posted: {len(self.links_posted)}")
+        if self.links_failed:
+            bits.append(f"links GIVEN UP ON: {len(self.links_failed)}")
         return "; ".join(bits)
 
 
@@ -294,8 +299,21 @@ class Trigger:
                         recording, operation=self._operations.get(recording.id)
                     )
             except SaarSevaError as exc:
+                if exc.permanent:
+                    # saar-seva has no such session and never will. Retrying is
+                    # pointless, and leaving it at the head of the queue would
+                    # starve every clip behind it — which is how one stale clip
+                    # silently stops the whole shop's links from being posted.
+                    log.error(
+                        "giving up on the link for clip %s: %s", recording.id, exc
+                    )
+                    self.catalogue.mark_link_failed(recording.id, str(exc))
+                    result.links_failed.append(recording.id)
+                    continue
                 log.warning("could not post the link for clip %s: %s", recording.id, exc)
-                return  # saar-seva is unhappy; stop hammering it until next tick
+                if exc.status is None:
+                    return  # saar-seva is unreachable; the rest will fail too
+                continue  # this clip is not ready (e.g. no delivery order yet)
 
             self.catalogue.mark_link_posted(recording.id)
             self._operations.pop(recording.id, None)

@@ -37,7 +37,22 @@ DEFAULT_TIMEOUT = 10.0
 
 
 class SaarSevaError(Exception):
-    """saar-seva could not be reached, or answered with something unusable."""
+    """saar-seva could not be reached, or answered with something unusable.
+
+    ``status`` is the HTTP status when there was one, and None when the call
+    never got an answer at all. The caller needs the difference: a 404 for a
+    session saar-seva has never heard of will never succeed however long we
+    retry, while an unreachable server is exactly the case that must be retried.
+    """
+
+    def __init__(self, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def permanent(self) -> bool:
+        """True when retrying cannot help. 404 = no such session, ever."""
+        return self.status == 404
 
 
 # --------------------------------------------------------------------------
@@ -327,8 +342,11 @@ class SaarSevaClient:
             # service token is wrong, which looks nothing like an outage.
             detail = {401: "the API key was rejected", 403: "the API key is not allowed here",
                       404: f"{path} does not exist on the server yet"}.get(exc.code, "")
-            raise SaarSevaError(f"{method} {path} failed: HTTP {exc.code}"
-                                f"{' — ' + detail if detail else ''}") from exc
+            raise SaarSevaError(
+                f"{method} {path} failed: HTTP {exc.code}"
+                f"{' — ' + detail if detail else ''}",
+                status=exc.code,
+            ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise SaarSevaError(f"could not reach saar-seva at {self.config.base_url}: {exc}") from exc
 
@@ -400,10 +418,19 @@ class SaarSevaClient:
             "duration_s": recording.duration_s,
             "recorded_at": recording.started_at,
         }
+        # The time log is what saar-seva keys the chatter post on, and what
+        # makes a retry idempotent there. It comes from the CATALOGUE
+        # (source_ref, written when the clip was filed), not from the in-memory
+        # map: retries are driven from the catalogue precisely so a clip
+        # survives a restart, and a retry that arrives without the session id is
+        # a 404 no matter how many times it is sent.
+        time_log_id = recording.source_ref or (operation.time_log_id if operation else "")
+        if not time_log_id:
+            raise SaarSevaError(
+                f"clip {recording.id} has no saar-seva session to post against"
+            )
+        body["time_log_id"] = time_log_id
         if operation:
-            # The time log is what saar-seva keys the chatter post on, and what
-            # makes a retry idempotent there.
-            body["time_log_id"] = operation.time_log_id
             body["job_id"] = operation.job_id
 
         self._request("POST", "/trc/recordings", body=body)

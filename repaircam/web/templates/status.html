@@ -50,6 +50,34 @@
      This is normal until the recorder is given its saar-seva settings.</p>
 {% endif %}
 
+{% if link_failures %}
+<h2 class="section">Links that never reached Odoo</h2>
+<div class="flash flash-error">
+  <p><b>{{ link_failures|length }} clip{{ '' if link_failures|length == 1 else 's' }}
+     could not be linked into Odoo, and {{ 'it is' if link_failures|length == 1 else 'they are' }}
+     no longer being retried.</b></p>
+  <p class="small">
+    saar-seva did not recognise the job session {{ 'this clip' if link_failures|length == 1
+    else 'these clips' }} came from, so retrying could never succeed. The footage itself is
+    safe and is in the Library &mdash; only the automatic link into the Odoo chatter failed.
+    Paste the clip's address into the job by hand, or ask for it to be looked at.
+  </p>
+</div>
+<table class="table">
+  <thead><tr><th>Clip</th><th>Bench</th><th>Job</th><th>Why</th></tr></thead>
+  <tbody>
+    {% for clip in link_failures %}
+    <tr>
+      <td><a href="{{ url_for('repaircam.clip', recording_id=clip.id) }}">#{{ clip.id }}</a></td>
+      <td><b>{{ clip.work_center }}</b></td>
+      <td class="muted">{{ clip.labels.mo_name or 'unlabelled' }}</td>
+      <td class="muted small">{{ clip.link_error }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 {% if orphans %}
 <h2 class="section">Unsaved footage</h2>
 <div class="flash flash-error">

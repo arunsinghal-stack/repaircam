@@ -194,3 +194,31 @@ not written twice — passes, as do the auth and retry paths.
 
 **Not verified:** anything touching a real camera, a real Odoo, or Render. Those need
 the shop LAN.
+
+---
+
+## Retries, and when RepairCam gives up
+
+Link posting is driven from the **catalogue**, not from memory, so a clip whose
+post failed — or one finished just before a restart — is still posted afterwards.
+Three rules make that actually work, each of which was learned the hard way on
+the first live run:
+
+- **The session id lives in the catalogue.** `source_ref` holds saar-seva's
+  `time_log_id`, written when the clip is filed. A retry that reads it from an
+  in-memory map posts *without* an id after a restart, and saar-seva answers 404
+  forever. Retry-from-catalogue is only real if the identity survives too.
+- **Only integration clips are queued.** saar-seva matches a clip by its own
+  session id. A clip a technician started by hand in RepairCam has none, whatever
+  MO number was typed into RepairCam's form, so it can never be posted and must
+  never enter the queue.
+- **404 means stop.** It says saar-seva has no such session, and no amount of
+  retrying changes that. The clip is marked with `link_error`, dropped from the
+  queue, and shown on the status page. Every other failure stays retryable —
+  an unreachable server ends the round, a 409 ("no delivery order yet") just
+  moves to the next clip.
+
+The last rule exists because the queue is ordered oldest-first: without it, one
+clip that can never post sits at the head of it and silently stops every later
+clip's link from reaching Odoo. That is exactly what happened on the first live
+run, and nothing in the UI said so.

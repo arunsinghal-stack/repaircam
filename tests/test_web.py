@@ -199,3 +199,27 @@ def test_bench_thumbnail_stays_on_the_cheap_stream(client, camera, monkeypatch):
 
     assert client.get("/bench/WC2/snapshot.jpg").status_code == 200
     assert stub.snapshots == ["sub"]
+
+
+def test_status_page_shows_links_that_never_reached_odoo(client, app):
+    """Nothing retries these, so if the page does not show them, nobody ever
+    learns a video is missing from its job."""
+    from repaircam.catalogue import JobLabels, Recording, utcnow
+
+    cat = app.extensions["catalogue"]
+    clip = cat.add(
+        Recording(
+            work_center="WC2",
+            path="recordings/a.mp4",
+            started_at=utcnow(),
+            labels=JobLabels(mo_name="WH/MO/42"),
+            source="repair",
+            source_ref="gone",
+        )
+    )
+    cat.mark_link_failed(clip.id, "POST /trc/recordings failed: HTTP 404")
+
+    page = client.get("/status").data
+    assert b"Links that never reached Odoo" in page
+    assert b"WH/MO/42" in page
+    assert b"HTTP 404" in page

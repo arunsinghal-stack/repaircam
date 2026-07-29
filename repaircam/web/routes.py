@@ -352,6 +352,9 @@ def status():
         trigger_configured=saarseva.is_configured(),
         orphans=orphans,
         orphan_mb=round(sum(o.size_mb for o in orphans), 1),
+        # Clips whose link saar-seva refused for good. Nothing retries these,
+        # so this page is the only place they surface.
+        link_failures=catalogue().list_link_failures(),
         ffmpeg_version=ffmpeg.version(),
         ffmpeg_ok=ffmpeg.available(),
         data_dir=root,

@@ -168,6 +168,11 @@ def recording(**kw) -> Recording:
         started_at=utcnow(),
         duration_s=412.5,
         labels=JobLabels(mo_name="WH/MO/42", operation="Screen replacement", imei="350111"),
+        # Every clip that legitimately reaches /trc/recordings came from a
+        # saar-seva session; source_ref is that session's id, stored when the
+        # clip was filed so a retry survives a restart.
+        source="repair",
+        source_ref="3f2b",
     )
     defaults.update(kw)
     return Recording(**defaults)
@@ -196,6 +201,26 @@ def test_post_recording_identifies_the_timer_it_belongs_to(config):
     assert body["time_log_id"] == "3f2b"
     assert body["job_id"] == "9a1c"
 
+
+def test_post_recording_takes_the_session_id_from_the_catalogue(config):
+    """Not from the in-memory map — retries are driven from the catalogue so a
+    clip finished before a restart still gets posted, and it can only do that if
+    the session id survived the restart too."""
+    opener = FakeOpener({})
+    SaarSevaClient(config, opener=opener).post_recording(recording(source_ref="from-db"))
+
+    assert json.loads(opener.last.data)["time_log_id"] == "from-db"
+
+
+def test_post_recording_refuses_a_clip_with_no_session(config):
+    """A hand-started clip has nothing for saar-seva to match. Sending it would
+    404 on every poll forever, so it is refused here instead."""
+    opener = FakeOpener({})
+    client = SaarSevaClient(config, opener=opener)
+
+    with pytest.raises(SaarSevaError, match="no saar-seva session"):
+        client.post_recording(recording(source="", source_ref=""))
+    assert opener.requests == []  # nothing was sent at all
 
 def test_post_recording_uses_post_and_json(config):
     opener = FakeOpener({})

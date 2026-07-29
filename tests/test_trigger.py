@@ -36,6 +36,11 @@ class FakeClient:
         self.active: list[ActiveOperation] = []
         self.fail_with: str | None = None
         self.post_fail_with: str | None = None
+        #: HTTP status the fake post failure carries. 404 means saar-seva has
+        #: no such session, which is permanent; None means it never answered.
+        self.post_fail_status: int | None = None
+        #: Clip ids whose post should fail; None = every post fails.
+        self.post_fail_ids: set[int] | None = None
         self.posted: list[int] = []
         self.posted_packing: list[int] = []
         self.active_packing: list[ActiveOperation] = []
@@ -53,16 +58,21 @@ class FakeClient:
             raise SaarSevaError(self.packing_fail_with)
         return list(self.active_packing)
 
+    def _maybe_fail(self, recording):
+        if not self.post_fail_with:
+            return
+        if self.post_fail_ids is not None and recording.id not in self.post_fail_ids:
+            return
+        raise SaarSevaError(self.post_fail_with, status=self.post_fail_status)
+
     def post_packing_recording(self, recording):
-        if self.post_fail_with:
-            raise SaarSevaError(self.post_fail_with)
+        self._maybe_fail(recording)
         self.posted.append(recording.id)
         self.posted_packing.append(recording.id)
         return True
 
     def post_recording(self, recording, *, operation=None):
-        if self.post_fail_with:
-            raise SaarSevaError(self.post_fail_with)
+        self._maybe_fail(recording)
         self.posted.append(recording.id)
         return True
 
@@ -357,6 +367,92 @@ def test_unlabelled_clips_are_not_posted(trigger, client, catalogue):
     trigger.tick()
 
     assert client.posted == []
+
+
+def test_a_hand_started_clip_is_never_queued_for_saar_seva(trigger, client, catalogue):
+    """saar-seva matches a clip by ITS OWN session id. A clip a technician
+    started in RepairCam has none, however carefully the MO was typed into our
+    form — so sending it can only ever 404, on every poll, forever."""
+    catalogue.add(
+        Recording(
+            work_center="WC2",
+            path="recordings/by-hand.mp4",
+            started_at=utcnow(),
+            labels=JobLabels(mo_name="TEST-001"),
+        )
+    )
+    client.active = []
+    trigger.tick()
+
+    assert client.posted == []
+    assert catalogue.list()[0].link_posted == 0  # left alone, not marked done
+
+
+def test_a_clip_saar_seva_will_never_accept_is_given_up_on(trigger, client, catalogue):
+    """A 404 means there is no such session and never will be. Retrying it every
+    five seconds until the end of time helps nobody."""
+    client.active = [op(12)]
+    trigger.tick()
+    client.active = []
+    client.post_fail_with = "POST /trc/recordings failed: HTTP 404"
+    client.post_fail_status = 404
+
+    result = trigger.tick()
+
+    assert result.links_failed == [1]
+    row = catalogue.list()[0]
+    assert row.link_posted == 0
+    assert "404" in row.link_error
+
+    # And it is not tried again.
+    client.post_fail_with = None
+    trigger.tick()
+    assert client.posted == []
+
+
+def test_one_dead_clip_does_not_starve_the_ones_behind_it(trigger, client, catalogue):
+    """The failure that actually bit: the queue is ordered oldest-first, so a
+    clip that can never post sat at the head of it and silently stopped every
+    later clip's link from reaching Odoo."""
+    # saar-seva is unreachable while both clips finish, so both queue up
+    # unposted — which is the state the real shop was in.
+    client.post_fail_with = "could not reach saar-seva"
+    client.post_fail_status = None
+    client.active = [op(12, mo="WH/MO/1"), op(13, mo="WH/MO/2")]
+    trigger.tick()
+    client.active = []
+    trigger.tick()
+    assert [r.link_posted for r in catalogue.list()] == [0, 0]
+
+    # Now it answers, but has never heard of the older clip.
+    client.post_fail_with = "POST /trc/recordings failed: HTTP 404"
+    client.post_fail_status = 404
+    client.post_fail_ids = {1}
+
+    result = trigger.tick()
+
+    assert result.links_failed == [1]
+    assert 2 in client.posted, "the clip behind the dead one must still be posted"
+
+
+def test_an_unreachable_saar_seva_leaves_clips_retryable(trigger, client, catalogue):
+    """Giving up is only for 'no such session'. An outage must not burn clips."""
+    client.active = [op(12)]
+    trigger.tick()
+    client.active = []
+    client.post_fail_with = "could not reach saar-seva"
+    client.post_fail_status = None  # never got an answer
+
+    result = trigger.tick()
+
+    assert result.links_failed == []
+    row = catalogue.list()[0]
+    assert row.link_error == ""
+    assert row.link_posted == 0
+
+    client.post_fail_with = None
+    trigger.tick()
+    assert client.posted == [1]
 
 
 def test_a_clip_is_never_posted_twice(trigger, client, catalogue):
