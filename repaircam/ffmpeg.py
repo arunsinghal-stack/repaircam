@@ -359,7 +359,12 @@ def reachable(url: str, *, timeout: float = DEFAULT_CHECK_TIMEOUT) -> tuple[bool
     if summary.get("width") and summary.get("height"):
         size = f" {summary['width']}x{summary['height']}"
     codec = summary.get("video_codec") or "?"
-    return True, f"OK — {codec}{size}"
+    # Say WHICH stream answered. This check runs against the sub-stream (it is
+    # cheap and never disturbs a recording), so the size shown is the preview's,
+    # not the recording's — and a bare "736x416" next to a 4MP camera reads like
+    # something is badly wrong when nothing is.
+    which = " (sub-stream; recordings use the main one)" if "stream2" in url else ""
+    return True, f"OK — {codec}{size}{which}"
 
 
 # --------------------------------------------------------------------------
