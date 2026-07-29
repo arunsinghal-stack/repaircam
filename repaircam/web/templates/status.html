@@ -37,6 +37,18 @@
     <dd class="{{ 'warn-text' if trigger.ok is false else '' }}">
       {{ trigger.summary }}
       {%- if trigger.seconds_since_tick is not none %} ({{ trigger.seconds_since_tick }}s ago){% endif %}</dd>
+    <dt>Recording light</dt>
+    <dd>
+      {% if trigger.heartbeat_error %}
+        <span class="warn-text">not reaching saar-seva &mdash; {{ trigger.heartbeat_error }}</span>
+      {% elif trigger.heartbeat_seconds_ago is none %}
+        <span class="muted">not reported yet</span>
+      {% else %}
+        reported {{ trigger.heartbeat_seconds_ago }}s ago
+      {% endif %}
+      <div class="muted small">What the technician screen shows about each bench's camera.</div>
+    </dd>
+
     <dt>Camera list</dt>
     <dd>
       {% if trigger.config_sync_error %}

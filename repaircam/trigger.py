@@ -119,6 +119,8 @@ class Trigger:
         self.last_tick_at: float = 0.0
         self.last_sync: camerasync.SyncResult | None = None
         self.last_sync_error: str = ""
+        self.last_heartbeat_at: float = 0.0
+        self.last_heartbeat_error: str = ""
 
     def reload_benches(self) -> dict[int, str]:
         """Rebuild the work-centre -> bench map from cameras.yaml.
@@ -501,10 +503,23 @@ class Trigger:
         try:
             self.client.post_heartbeat(benches)
         except SaarSevaError as exc:
+            # Never fatal — a light on a screen does not outrank filming the
+            # work. But it must be VISIBLE: a heartbeat failing quietly is
+            # indistinguishable, from the technician's side, from a recorder
+            # that has died, and that is exactly the wrong place to guess.
             if exc.status == 404:
+                self.last_heartbeat_error = (
+                    "this saar-seva has no recorder-heartbeat endpoint yet, so the "
+                    "recording light on the technician screen cannot work"
+                )
                 log.debug("saar-seva has no recorder-heartbeat endpoint yet")
             else:
-                log.debug("heartbeat not delivered: %s", exc)
+                self.last_heartbeat_error = str(exc)
+                log.warning("heartbeat not delivered: %s", exc)
+            return
+
+        self.last_heartbeat_error = ""
+        self.last_heartbeat_at = time.time()
 
     # -- background loop ----------------------------------------------------
 
@@ -550,6 +565,10 @@ class Trigger:
             "config_sync_summary": sync.summary() if sync else "",
             "config_sync_error": self.last_sync_error,
             "config_sync_waiting": list(sync.deferred) if sync else [],
+            "heartbeat_error": self.last_heartbeat_error,
+            "heartbeat_seconds_ago": (
+                round(time.time() - self.last_heartbeat_at, 1) if self.last_heartbeat_at else None
+            ),
             "running": self.running,
             "base_url": self.config.base_url,
             "poll_seconds": self.config.poll_seconds,

@@ -967,3 +967,28 @@ def test_a_saar_seva_that_sends_no_revision_never_triggers_a_sync(trigger, clien
     client.config_revision = None
     trigger.tick()
     assert client.camera_fetches == 0
+
+
+def test_a_heartbeat_that_never_arrives_is_visible(trigger, client):
+    """It failing quietly is indistinguishable, from the technician's side, from
+    a recorder that has died — and that is the wrong thing to have to guess."""
+    client.heartbeat_fail_with = "POST /trc/recorder-heartbeat failed: HTTP 404"
+    client.heartbeat_fail_status = 404
+    trigger.tick()
+
+    status = trigger.status()
+    assert "recorder-heartbeat" in status["heartbeat_error"]
+    assert status["heartbeat_seconds_ago"] is None
+
+
+def test_a_delivered_heartbeat_clears_the_warning(trigger, client):
+    client.heartbeat_fail_with = "boom"
+    client.heartbeat_fail_status = 500
+    trigger.tick()
+    assert trigger.status()["heartbeat_error"]
+
+    client.heartbeat_fail_with = None
+    trigger.tick()
+    status = trigger.status()
+    assert status["heartbeat_error"] == ""
+    assert status["heartbeat_seconds_ago"] is not None
