@@ -36,8 +36,13 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 
 ## Hardware (POC — frozen)
 - Recorder: existing **Linux i3 laptop** (8 GB RAM OK). POC uses a **single PoE injector** (no switch).
+  On the shop LAN at **192.168.1.163**; the web UI is `http://192.168.1.163:8080`, installed as
+  the `repaircam` systemd service (starts on boot). That URL is also what `link_base` must be
+  set to in `saarseva.yaml` when Phase 5 is switched on — the links posted to Odoo point at it.
 - Camera CHOSEN: **TP-Link VIGI C540V** (4MP, 3× optical zoom + autofocus, ONVIF/RTSP, PoE).
-  Working RTSP: `rtsp://admin:<pass>@192.168.0.133:554/stream1` (main) / `/stream2` (sub).
+  Live on the shop LAN at **192.168.1.184** (the shop is a `192.168.1.x` network; older notes
+  saying `192.168.0.133` are stale — test fixtures still use that as a dummy, which is fine).
+  Working RTSP: `rtsp://admin:<pass>@192.168.1.184:554/stream1` (main) / `/stream2` (sub).
   Bench cam bitrate capped at 4096 kbps in the VIGI app; audio is `pcm_alaw` → must transcode to AAC for MP4.
 - Buying rule: **motorized varifocal only** (a lens focal RANGE like 2.8–12mm). A single mm number = fixed = reject.
 
