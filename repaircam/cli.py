@@ -71,6 +71,13 @@ def cmd_cameras(args: argparse.Namespace) -> int:
         print(f"         {camera.model or 'camera'} at {camera.host} via {camera.backend}")
         print(f"         record: {camera.safe_main_url}")
         print(f"         preview: {camera.safe_sub_url}")
+        # Printed even when unset: without it the bench is simply never
+        # auto-triggered, and a silent opt-out is exactly the sort of thing
+        # someone spends an afternoon not finding.
+        if camera.odoo_workcenter_id:
+            print(f"         odoo work centre: {camera.odoo_workcenter_id} (auto-trigger ready)")
+        else:
+            print("         odoo work centre: NOT SET — this bench will never auto-record")
         if args.check:
             ok, message = build_backend(camera).check(timeout=args.timeout)
             print(f"         {OK if ok else BAD} {message}")

@@ -4,8 +4,9 @@
 #
 # cameras.yaml holds real passwords and is gitignored. NEVER commit it.
 #
-# Rule: 1 Work Center = 1 bench = 1 camera. The key (WC1, WC2, ...) must match
-# the Work Center code in Odoo, because that is what ties a clip to its job.
+# Rule: 1 Work Center = 1 bench = 1 camera. The key (WC1, WC2, ...) is RepairCam's
+# own label — pick anything readable. What ties a bench to its job is the
+# odoo_workcenter_id further down; saar-seva has no "WC2"-style code at all.
 
 cameras:
   WC2:
