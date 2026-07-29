@@ -1,0 +1,39 @@
+# RepairCam storage — copy this file to storage.yaml to change any of it.
+#
+#     cp repaircam/storage.example.yaml repaircam/storage.yaml
+#
+# WITHOUT this file everything below still applies at its default. The
+# free-space guard is not something you switch on: it is what stops a repair
+# being half-recorded onto a full disk.
+#
+# Rough sizing: one bench recording for one hour is about 1.8 GB.
+
+storage:
+  # Recording is REFUSED below this. About eleven bench-hours, so a bench that
+  # is allowed to start a repair has room to finish it.
+  min_free_gb: 20
+
+  # Still recording, but the dashboard says space is running out.
+  warn_free_gb: 50
+
+  # Where the second copy goes — a USB/archive disk or a mounted NAS share.
+  # LEAVE EMPTY and there is no second copy: the shop's only recording of every
+  # repair sits on this one laptop, and nothing is ever deleted either.
+  #
+  # Examples:
+  #   archive_dir: "/mnt/repaircam-archive"
+  #   archive_dir: "/media/user/ARCHIVE-HDD/repaircam"
+  archive_dir: ""
+
+  # How long a clip stays on the recorder AFTER it has been copied and the copy
+  # verified. Clips that were never archived are never removed, whatever age.
+  keep_days: 30
+
+  # Deleting footage is the one thing here that cannot be undone, so it is off
+  # until you say otherwise. With this false, clips are copied to the archive
+  # and then simply left in place — which fills the disk eventually, but never
+  # loses anything.
+  #
+  # Before setting this true, look in archive_dir and satisfy yourself the clips
+  # are really there and really play.
+  delete_after_archive: false

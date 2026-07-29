@@ -124,8 +124,15 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - Catalogue schema v2: `recordings.source` / `source_ref` say which integration a clip came
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
-- **Retention/archive:** nothing deletes or moves old clips. ~1.8 GB per bench-hour, so the
-  SSD will fill and recording will stop mid-repair. Next real build item.
+- **Retention/archive (Phase 3, BUILT — not yet configured in the shop):** `storage.py`.
+  Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
+  is let through. Clips are copied to `archive_dir` and verified there; only then, and only
+  with `delete_after_archive: true`, are local copies older than `keep_days` removed — and
+  the archived file is re-checked for existence and size at the moment of deletion, because
+  the database row is not evidence. A background worker does it every 10 min; `cli storage
+  [--archive] [--prune]` does it by hand. Config: `repaircam/storage.yaml` (optional —
+  the guard applies without it). **`archive_dir` is unset today, so this laptop still holds
+  the only copy of every clip.**
 
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.

@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
@@ -47,6 +47,14 @@ CREATE TABLE IF NOT EXISTS recordings (
     -- session: retrying that forever achieves nothing and, worse, blocks every
     -- clip queued behind it.
     link_error    TEXT    DEFAULT '',
+    -- Where a verified second copy of this clip lives, and when it got there.
+    -- Nothing is ever deleted locally without both, AND a fresh check that the
+    -- file is still at the other end.
+    archived_at   TEXT    DEFAULT '',
+    archive_path  TEXT    DEFAULT '',
+    -- Set when the local file has been removed. The row stays: it is the only
+    -- record of where the footage went.
+    local_deleted INTEGER DEFAULT 0,
     -- Which integration asked for this clip: '' (started by hand), 'repair'
     -- or 'packing'. source_ref is that system's own id for the session.
     -- Kept in the database, not just in memory, so a clip whose link has not
@@ -134,6 +142,9 @@ class Recording:
     source: str = ""
     source_ref: str = ""
     link_error: str = ""
+    archived_at: str = ""
+    archive_path: str = ""
+    local_deleted: int = 0
     created_at: str = field(default_factory=utcnow)
     labels: JobLabels = field(default_factory=JobLabels)
 
@@ -192,6 +203,9 @@ class Catalogue:
                 ("source", "ALTER TABLE recordings ADD COLUMN source TEXT DEFAULT ''"),
                 ("source_ref", "ALTER TABLE recordings ADD COLUMN source_ref TEXT DEFAULT ''"),
                 ("link_error", "ALTER TABLE recordings ADD COLUMN link_error TEXT DEFAULT ''"),
+                ("archived_at", "ALTER TABLE recordings ADD COLUMN archived_at TEXT DEFAULT ''"),
+                ("archive_path", "ALTER TABLE recordings ADD COLUMN archive_path TEXT DEFAULT ''"),
+                ("local_deleted", "ALTER TABLE recordings ADD COLUMN local_deleted INTEGER DEFAULT 0"),
             ):
                 if column not in existing:
                     conn.execute(ddl)
@@ -219,6 +233,9 @@ class Catalogue:
             source=(row["source"] if "source" in row.keys() else "") or "",
             source_ref=(row["source_ref"] if "source_ref" in row.keys() else "") or "",
             link_error=(row["link_error"] if "link_error" in row.keys() else "") or "",
+            archived_at=(row["archived_at"] if "archived_at" in row.keys() else "") or "",
+            archive_path=(row["archive_path"] if "archive_path" in row.keys() else "") or "",
+            local_deleted=int(row["local_deleted"] if "local_deleted" in row.keys() else 0) or 0,
             created_at=row["created_at"],
             labels=JobLabels(
                 mo_name=row["mo_name"],
@@ -424,6 +441,61 @@ class Catalogue:
                 (limit,),
             ).fetchall()
         return [self._to_recording(row) for row in rows]
+
+    # -- archiving ----------------------------------------------------------
+
+    def list_unarchived(self, limit: int = 20) -> list[Recording]:
+        """Clips with no verified second copy yet, oldest first.
+
+        Oldest first because those are the ones closest to being deleted, and
+        deleting something that was never copied is the failure this whole
+        column exists to prevent.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recordings WHERE archived_at = '' AND local_deleted = 0"
+                " ORDER BY id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._to_recording(row) for row in rows]
+
+    def list_archived_before(self, cutoff_iso: str, limit: int = 200) -> list[Recording]:
+        """Archived clips whose recording started before ``cutoff_iso``."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recordings WHERE archived_at != '' AND local_deleted = 0"
+                "   AND started_at < ?"
+                " ORDER BY id ASC LIMIT ?",
+                (cutoff_iso, limit),
+            ).fetchall()
+        return [self._to_recording(row) for row in rows]
+
+    def mark_archived(self, recording_id: int, archive_path: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET archived_at=?, archive_path=? WHERE id=?",
+                (utcnow(), archive_path, recording_id),
+            )
+
+    def mark_local_deleted(self, recording_id: int) -> None:
+        """The footage is gone from this disk, not from the world."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET local_deleted=1 WHERE id=?", (recording_id,)
+            )
+
+    def count_unarchived(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) AS n FROM recordings "
+                "WHERE archived_at = '' AND local_deleted = 0"
+            ).fetchone()["n"])
+
+    def count_archived(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) AS n FROM recordings WHERE archived_at != ''"
+            ).fetchone()["n"])
 
     # -- small persistent settings -----------------------------------------
     #

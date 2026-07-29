@@ -18,9 +18,46 @@
   <dt>Data directory</dt><dd><code>{{ data_dir }}</code></dd>
   {% if disk %}
   <dt>Disk</dt>
-  <dd class="{{ 'warn-text' if disk.free_gb < 20 else '' }}">
-    {{ disk.free_gb }} GB free of {{ disk.total_gb }} GB ({{ disk.used_percent }}% used)
-    — room for roughly {{ disk.bench_hours }} more bench-hours
+  <dd class="{{ 'err' if disk.state == 'full' else ('warn-text' if disk.state == 'low' else '') }}">
+    {{ disk.message }}
+    <div class="muted small">
+      {{ disk.free_gb }} GB free of {{ disk.total_gb }} GB ({{ disk.used_percent }}% used)
+    </div>
+  </dd>
+  {% endif %}
+
+  {% if store %}
+  <dt>Second copy</dt>
+  <dd>
+    {% if store.config.archive_dir == 'not set' %}
+      <span class="warn-text">Not set up &mdash; this machine holds the only copy of every clip.</span>
+      <div class="muted small">
+        A stolen or dropped laptop loses all of it. Set <code>archive_dir</code> in
+        <code>repaircam/storage.yaml</code> to a second disk or a NAS folder.
+      </div>
+    {% elif store.archive_missing %}
+      <span class="err">{{ store.config.archive_dir }} is not there &mdash; is the disk mounted?</span>
+      <div class="muted small">
+        Nothing is being copied, and nothing will be deleted while this is true.
+      </div>
+    {% else %}
+      <code>{{ store.config.archive_dir }}</code>
+      <div class="muted small">
+        {{ store.archived }} clip{{ '' if store.archived == 1 else 's' }} copied,
+        <span class="{{ 'warn-text' if store.unarchived else '' }}">{{ store.unarchived }}
+        still only here</span>.
+        {% if store.config.delete_after_archive %}
+          Copied clips are removed locally after {{ store.config.keep_days }} days.
+        {% else %}
+          Nothing is deleted &mdash; <code>delete_after_archive</code> is off.
+        {% endif %}
+      </div>
+    {% endif %}
+    {% if store.last_error %}
+      <div class="err small">{{ store.last_error }}</div>
+    {% elif store.seconds_since_run is not none %}
+      <div class="muted small">Last checked {{ store.seconds_since_run }}s ago{% if store.last_summary %} &mdash; {{ store.last_summary }}{% endif %}</div>
+    {% endif %}
   </dd>
   {% endif %}
   <dt>Recorded</dt>

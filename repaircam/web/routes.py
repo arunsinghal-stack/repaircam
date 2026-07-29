@@ -20,7 +20,7 @@ from flask import (
     url_for,
 )
 
-from .. import __version__, config, ffmpeg, recovery, saarseva
+from .. import __version__, config, ffmpeg, recovery, saarseva, storage
 from ..backends import CaptureError, build_backend
 from ..catalogue import Catalogue, JobLabels, read_sidecar
 from ..config import ConfigError
@@ -137,6 +137,10 @@ def bench(work_center: str):
         "bench.html",
         camera=camera,
         status=recorder.status(),
+        # The bench is where somebody is about to press Start, so it is where a
+        # disk about to refuse them belongs — not only on a status page nobody
+        # opens until something has already gone wrong.
+        disk=storage.disk_report().as_dict(),
         recent=catalogue().list(work_center=work_center, limit=5),
         events=catalogue().recent_events(limit=12, work_center=work_center),
     )
@@ -320,17 +324,11 @@ def clip_labels(recording_id: int):
 @bp.route("/status")
 def status():
     root = config.data_dir()
-    disk = None
-    if root.exists():
-        usage = shutil.disk_usage(root)
-        free_gb = usage.free / 1_073_741_824
-        disk = {
-            "free_gb": round(free_gb, 1),
-            "total_gb": round(usage.total / 1_073_741_824, 1),
-            "used_percent": round(usage.used / usage.total * 100) if usage.total else 0,
-            # ~4 Mbps of copied video is roughly 1.8 GB per bench-hour.
-            "bench_hours": round(free_gb / 1.8),
-        }
+    # One source of truth for free space: the same report the guard refuses a
+    # recording on, so the page can never look healthier than the bench does.
+    worker = current_app.extensions.get("storage")
+    store = worker.status() if worker else storage.status(catalogue())
+    disk = store["disk"]
 
     checks = []
     if request.args.get("cameras") == "1":
@@ -359,6 +357,7 @@ def status():
         ffmpeg_ok=ffmpeg.available(),
         data_dir=root,
         disk=disk,
+        store=store,
         stats=catalogue().stats(),
         cameras=config.load_cameras(),
         checks=checks,

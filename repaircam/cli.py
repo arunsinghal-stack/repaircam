@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, ffmpeg, recovery, saarseva
+from . import __version__, config, ffmpeg, recovery, saarseva, storage
 from .backends import CaptureError, build_backend
 from .catalogue import Catalogue, JobLabels
 from .config import ConfigError
@@ -26,6 +26,7 @@ log = logging.getLogger("repaircam")
 
 OK = "OK  "
 BAD = "FAIL"
+WARN = "WARN"
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -130,6 +131,47 @@ def _sync_cameras_now() -> int:
     print(f"{OK} {result.summary()}")
     if result.deferred:
         print("     Those benches are recording; run this again when they finish.")
+    return 0
+
+
+def cmd_storage(args: argparse.Namespace) -> int:
+    """How much room is left, what has a second copy, and what has not."""
+    catalogue = Catalogue()
+    cfg = storage.load_config()
+
+    if args.archive:
+        result = storage.archive_pending(catalogue, cfg, limit=args.limit)
+        marker = OK if result.ok else BAD
+        print(f"{marker} {result.summary()}")
+        for clip_id, reason in result.failed:
+            print(f"     clip {clip_id}: {reason}", file=sys.stderr)
+        if not result.ok:
+            return 1
+
+    if args.prune:
+        result = storage.prune(catalogue, cfg)
+        print(f"{OK} {result.summary()}")
+
+    info = storage.status(catalogue, cfg)
+    disk = info["disk"]
+    marker = {"ok": OK, "low": WARN, "full": BAD}.get(disk["state"], OK)
+    print(f"\n  {marker} disk      {disk['message']}")
+
+    if not cfg.archive_dir:
+        print(f"  {WARN} archive   NOT SET — this laptop holds the only copy of every clip")
+        print( "            Set archive_dir in repaircam/storage.yaml.")
+    elif info["archive_missing"]:
+        print(f"  {BAD} archive   {cfg.archive_dir} is not there — is the disk mounted?")
+    else:
+        print(f"  {OK} archive   {cfg.archive_dir}")
+
+    print(f"     clips     {info['archived']} with a second copy, "
+          f"{info['unarchived']} without")
+    if info["unarchived"] and cfg.archive_dir:
+        print( "            Run:  python3 -m repaircam.cli storage --archive")
+    if cfg.archive_dir and not cfg.delete_after_archive:
+        print(f"     deleting  off — clips are kept after archiving "
+              f"(keep_days={cfg.keep_days} applies once it is on)")
     return 0
 
 
@@ -521,6 +563,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds to wait for a camera to answer (default: %(default)s)",
     )
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("storage", help="disk space, archive copies and clean-up")
+    p.add_argument("--archive", action="store_true",
+                   help="copy clips that have no second copy yet")
+    p.add_argument("--prune", action="store_true",
+                   help="delete local clips that are old AND verified at the archive")
+    p.add_argument("--limit", type=int, default=20,
+                   help="how many clips to archive in one run (default: %(default)s)")
+    p.set_defaults(func=cmd_storage)
 
     p = sub.add_parser("web", help="start the web UI")
     p.add_argument("--host", default="0.0.0.0", help="default 0.0.0.0 (whole shop LAN)")

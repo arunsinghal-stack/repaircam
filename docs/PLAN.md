@@ -376,7 +376,8 @@ if it ever is, it reads `capturing`, not the button.
 
 ## 12. Open items
 
-- **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
+- **Off-box sync has no destination yet.** `archive_dir` in storage.yaml is empty, so
+  every clip exists on exactly one laptop. The machinery is built; it needs a disk.
 - **Phase 5 has never run for real.** Both halves are built and saar-seva's are merged
   to its `staging`, but no clip has yet been triggered by a technician's timer.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from

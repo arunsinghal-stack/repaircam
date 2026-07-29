@@ -55,11 +55,33 @@ def create_app(**overrides) -> Flask:
     app.extensions["recorders"] = RecorderPool(app.extensions["catalogue"])
 
     app.extensions["trigger"] = _maybe_start_trigger(app)
+    app.extensions["storage"] = _start_storage_worker(app)
 
     from .routes import bp
 
     app.register_blueprint(bp)
     return app
+
+
+def _start_storage_worker(app: Flask):
+    """Keep the disk from filling, without anyone having to remember.
+
+    Always started, even with no archive configured: the disk report it keeps
+    up to date is what the status page and the free-space guard rely on being
+    honest about. It simply has nothing to copy until archive_dir is set.
+
+    Like the trigger, it must never prevent the web UI from starting — the shop
+    has to be able to record whatever the archive disk is doing.
+    """
+    from .. import storage
+
+    try:
+        worker = storage.StorageWorker(catalogue=app.extensions["catalogue"])
+        worker.start()
+        return worker
+    except Exception as exc:
+        log.error("storage worker could not start (recording is unaffected): %s", exc)
+        return None
 
 
 def _maybe_start_trigger(app: Flask):
