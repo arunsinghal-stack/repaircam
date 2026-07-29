@@ -108,7 +108,11 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   `ipaddress.is_private`, which also accepts loopback, link-local and the RFC 5737
   documentation ranges — `203.0.113.5` would have passed for a shop camera.
 
-## Packing video (BOTH halves built, not yet run for real)
+## Packing video (built end to end; never yet run in the shop)
+- **"Both halves built" was the wrong phrase and it hid a gap for a day.** It meant
+  RepairCam and saar-seva's *backend*. The packer's screen had no Record button at all —
+  `Packing.jsx` did not mention recording. Built now (saar-seva PRs #475, #477). When
+  describing this feature, say which of the THREE parts is done: recorder, endpoints, UI.
 - Packer presses **Record/Stop** on a saar-seva packing job; each clip's link goes to the
   **outgoing** Delivery Order's chatter. Several clips per order is normal.
 - **The DO rule:** an order is one-step (a single `outgoing` picking) or two-step (`internal`
@@ -119,8 +123,18 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Packing benches are Odoo work centres**, same as repair benches — `cameras.yaml` needs no
   new field, and multiple packing stations work.
 - saar-seva side: `routers/repaircam_pack.py` (`GET /pack/active`, `POST /pack/recordings`)
-  + `PackingRecording` model + packer Record/Stop in `warehouse.py`, on branch
-  `claude/packing-video-endpoints`. RepairCam side: `saarseva.py` + `trigger.py`.
+  + `PackingRecording` model + packer Record/Stop in `warehouse.py` + the panel in
+  `pages/warehouse/Packing.jsx`. RepairCam side: `saarseva.py` + `trigger.py`.
+- **Record appears only while the job is `packing`**, enforced in the endpoint too — a clip
+  of an empty bench looks like evidence. **Stop is never gated** and the panel stays while a
+  clip runs, whatever the status: otherwise a packer who completes the order with the camera
+  on cannot stop it and that bench films for ever.
+- The camera light comes from the packer's OWN recordings endpoint, not `/trc/recorder-state`
+  — that one is technician-authenticated and **a packer is not a technician**. The same role
+  split made packing benches unmappable until saar-seva PR #473.
+- Setup is three things, all joined on the Odoo work-centre id: the station is a work centre;
+  the packer carries the **Packer** tag and is mapped in Admin -> TRC settings -> **People**
+  (not "Technicians" — it lists both now); a camera is mapped to the same work centre.
 - Catalogue schema v2: `recordings.source` / `source_ref` say which integration a clip came
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
