@@ -148,6 +148,16 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   the guard applies without it). **`archive_dir` is unset today, so this laptop still holds
   the only copy of every clip.**
 
+## Going live
+- **docs/GO-LIVE.md** is the runbook. `cli preflight` checks the whole thing from the
+  recorder's side and says what to do about anything it finds — run it before believing
+  the shop is ready.
+- staging and production are **different databases**. The camera list and its passwords
+  entered on one do not exist on the other. Production needs its own `REPAIRCAM_API_KEY`
+  and `REPAIRCAM_CONFIG_KEY` on the `saar-seva-api` Render service.
+- Production already answers **503** on the RepairCam endpoints, which means the code is
+  deployed and only the key is missing. 401 would mean the key is set and ours is wrong.
+
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.
   A template lives at `repaircam/cameras.example.yaml`.

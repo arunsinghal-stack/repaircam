@@ -134,6 +134,152 @@ def _sync_cameras_now() -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """Everything that has to be true before a shop relies on this box.
+
+    One command rather than a checklist, because a checklist has to be
+    remembered and this does not. Every failure says what to do about it — the
+    person running this is standing at the recorder, not reading the source.
+    """
+    checks: list[tuple[str, str, str]] = []  # (marker, title, detail)
+
+    def add(ok, title, detail="", warn=False):
+        checks.append((WARN if warn else (OK if ok else BAD), title, detail))
+
+    print("RepairCam pre-flight\n")
+
+    # -- the box itself -----------------------------------------------------
+    add(ffmpeg.available(), "ffmpeg installed",
+        "" if ffmpeg.available() else "sudo apt update && sudo apt install -y ffmpeg")
+
+    report = storage.disk_report()
+    add(report.state != "full", "disk has room", report.message,
+        warn=report.state == "low")
+
+    store_cfg = storage.load_config()
+    if store_cfg.archive_dir:
+        archive = store_cfg.archive_path
+        add(archive.exists(), "archive reachable",
+            f"{archive}" if archive.exists() else f"{archive} is not there — is it mounted?")
+    else:
+        add(False, "second copy of the footage",
+            "No archive_dir in storage.yaml — this machine holds the ONLY copy of "
+            "every clip. A theft or a dead drive loses all of it.", warn=True)
+
+    # -- benches ------------------------------------------------------------
+    try:
+        cameras = config.load_cameras()
+    except ConfigError as exc:
+        add(False, "cameras.yaml", str(exc))
+        cameras = {}
+
+    if cameras:
+        add(True, f"{len(cameras)} bench(es) configured", ", ".join(sorted(cameras)))
+        unmapped = [wc for wc, cam in cameras.items() if cam.odoo_workcenter_id is None]
+        add(not unmapped, "every bench has an Odoo work centre",
+            "" if not unmapped else
+            f"{', '.join(sorted(unmapped))} will never auto-record — no odoo_workcenter_id")
+
+        if not args.quick:
+            for work_center in sorted(cameras):
+                ok, message = build_backend(cameras[work_center]).check(timeout=args.timeout)
+                add(ok, f"camera {work_center} answers", message)
+
+    # -- saar-seva ----------------------------------------------------------
+    try:
+        saar = saarseva.load_config()
+    except ConfigError:
+        add(False, "saar-seva auto-trigger",
+            "Not set up (no saarseva.yaml). Technicians would have to start every "
+            "recording by hand.", warn=True)
+        return _print_preflight(checks)
+
+    if not saar.enabled:
+        add(False, "saar-seva auto-trigger", "disabled in saarseva.yaml", warn=True)
+
+    staging = "staging" in saar.base_url
+    add(not staging, "pointed at production", saar.base_url,
+        warn=staging)
+
+    # An allow-list here silently vetoes a bench added centrally.
+    if saar.work_centers:
+        vetoed = sorted(
+            wc for wc, cam in cameras.items()
+            if cam.odoo_workcenter_id is not None and wc not in set(saar.work_centers)
+        )
+        add(not vetoed, "work_centers is not blocking a bench",
+            "" if not vetoed else
+            f"{', '.join(vetoed)} will never auto-record. Empty work_centers in "
+            f"saarseva.yaml to allow every configured bench.")
+    else:
+        add(True, "work_centers is empty", "every configured bench may auto-record")
+
+    add(bool(saar.link_base), "link_base set",
+        saar.link_base or "Not set — the links posted to Odoo would have no address.")
+
+    client = saarseva.SaarSevaClient(saar)
+    ids = sorted(c.odoo_workcenter_id for c in cameras.values() if c.odoo_workcenter_id)
+
+    try:
+        client.fetch_active(ids or None)
+        add(True, "saar-seva accepts the API key", saar.base_url)
+        reachable = True
+    except saarseva.SaarSevaError as exc:
+        hint = str(exc)
+        if "503" in hint:
+            hint += "\n            REPAIRCAM_API_KEY is not set on that server."
+        elif "401" in hint or "403" in hint:
+            hint += "\n            The token here and the one on the server differ."
+        add(False, "saar-seva accepts the API key", hint)
+        reachable = False
+
+    if reachable:
+        try:
+            client.post_heartbeat([])
+            add(True, "recording light reaches saar-seva")
+        except saarseva.SaarSevaError as exc:
+            add(False, "recording light reaches saar-seva", str(exc),
+                warn=getattr(exc, "status", None) == 404)
+
+        try:
+            payload = client.fetch_camera_config()
+            revision = payload.get("revision")
+            count = len(payload.get("cameras") or [])
+            if not revision:
+                add(False, "central camera list",
+                    "Nothing saved in the admin panel yet, so cameras.yaml stays "
+                    "hand-edited. That is fine — but it is not the central list.",
+                    warn=True)
+            else:
+                add(True, "central camera list", f"revision {revision}, {count} camera(s)")
+        except saarseva.SaarSevaError as exc:
+            add(False, "central camera list", str(exc),
+                warn=getattr(exc, "status", None) == 404)
+
+    return _print_preflight(checks)
+
+
+def _print_preflight(checks: list[tuple[str, str, str]]) -> int:
+    failed = warned = 0
+    for marker, title, detail in checks:
+        print(f"  {marker} {title}")
+        for line in (detail or "").splitlines():
+            if line.strip():
+                print(f"            {line.strip()}")
+        failed += marker == BAD
+        warned += marker == WARN
+
+    print()
+    if failed:
+        print(f"  {BAD} {failed} thing(s) must be fixed before going live.")
+        return 1
+    if warned:
+        print(f"  {WARN} Ready, with {warned} thing(s) worth knowing about above.")
+        return 0
+    print(f"  {OK} Ready.")
+    return 0
+
+
 def cmd_storage(args: argparse.Namespace) -> int:
     """How much room is left, what has a second copy, and what has not."""
     catalogue = Catalogue()
@@ -563,6 +709,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds to wait for a camera to answer (default: %(default)s)",
     )
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("preflight", help="is this box ready for the shop to rely on?")
+    p.add_argument("--quick", action="store_true", help="skip the camera network tests")
+    p.add_argument(
+        "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
+        help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
+    p.set_defaults(func=cmd_preflight)
 
     p = sub.add_parser("storage", help="disk space, archive copies and clean-up")
     p.add_argument("--archive", action="store_true",
