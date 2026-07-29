@@ -82,6 +82,32 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   Off until `repaircam/saarseva.yaml` exists AND saar-seva has `REPAIRCAM_API_KEY` set
   (without it those endpoints 503 everyone).
 
+## Recording light on saar-seva (LIVE — verified 2026-07-29)
+- The technician's `/trc/time` screen shows what the CAMERA is doing, beside the existing
+  `⏱ running` pill which only ever meant the TIMER. They differ whenever the recorder is
+  off, the camera is unplugged, the bench is unmapped, or the shop's internet is down.
+- RepairCam reports on the poll it already makes: `POST /trc/recorder-heartbeat` →
+  `recorder_bench_state`; the screen polls `GET /trc/recorder-state` every 5s.
+- **The staleness rule is the feature.** A state older than 20s comes back as `unknown`,
+  server-side, so no caller can render a stale light. Verify by stopping the recorder:
+  the light must go grey within 20s, never stay red.
+- `trigger.py` reports heartbeat delivery on the status page ("Recording light: reported
+  Ns ago"). It failed silently for an afternoon before that existed.
+- **Trap:** `work_centers` in `saarseva.yaml` is an allow-list. Leave it **empty**, or a
+  bench added centrally is fully configured and still never records. The status page calls
+  this out under "Not auto-recording".
+
+## Central camera config (BUILT, both halves merged; not yet used in the shop)
+- Camera list lives in Admin → TRC settings → "Cameras ↔ work centres" (`trc.manage`).
+  A revision number rides `/trc/active`; the recorder re-fetches `GET /repaircam/cameras`
+  only when it moves, then rewrites `cameras.yaml` itself. See docs/CAMERA-CONFIG-SYNC-PLAN.md.
+- Passwords are central, encrypted at rest under **`REPAIRCAM_CONFIG_KEY`** (Render env
+  var). Without it, saving a password is refused — plaintext is never the fallback.
+  **Lose that key and every camera password must be re-entered.**
+- Addresses are checked against 192.168/16, 10/8, 172.16/12 by membership. NOT
+  `ipaddress.is_private`, which also accepts loopback, link-local and the RFC 5737
+  documentation ranges — `203.0.113.5` would have passed for a shop camera.
+
 ## Packing video (BOTH halves built, not yet run for real)
 - Packer presses **Record/Stop** on a saar-seva packing job; each clip's link goes to the
   **outgoing** Delivery Order's chatter. Several clips per order is normal.
