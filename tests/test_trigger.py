@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from repaircam import config as camera_files
 from repaircam.catalogue import Catalogue, JobLabels, Recording, utcnow
 from repaircam.recorder import Recorder, RecorderPool, State
 from repaircam.saarseva import (
@@ -52,6 +53,22 @@ class FakeClient:
         self.heartbeats: list[list[dict]] = []
         self.heartbeat_fail_with: str | None = None
         self.heartbeat_fail_status: int | None = None
+        #: Camera-list revision the real client would have read off a poll.
+        self.config_revision: int | None = None
+        self.camera_config: dict | None = None
+        self.camera_fetches = 0
+        self.camera_fail_with: str | None = None
+        self.camera_fail_status: int | None = None
+
+    @property
+    def last_config_revision(self):
+        return self.config_revision
+
+    def fetch_camera_config(self):
+        if self.camera_fail_with:
+            raise SaarSevaError(self.camera_fail_with, status=self.camera_fail_status)
+        self.camera_fetches += 1
+        return self.camera_config or {}
 
     def fetch_active(self, workcenter_ids=None):
         self.asked_for = workcenter_ids
@@ -830,3 +847,123 @@ def test_a_failed_poll_sends_no_heartbeat(trigger, client, pool):
 
     assert len(client.heartbeats) == sent
     assert pool.get("WC2").state is State.RECORDING  # and recording carries on
+
+
+# --------------------------------------------------------------------------
+# the central camera list
+# --------------------------------------------------------------------------
+
+
+def camera_payload(revision=1, host="192.168.0.133"):
+    return {"revision": revision, "cameras": [
+        {"odoo_workcenter_id": 12, "name": "Bench 2", "host": host, "password": "pw"},
+        {"odoo_workcenter_id": 13, "name": "Bench 3", "host": "192.168.0.134", "password": "pw"},
+    ]}
+
+
+def test_an_unchanged_revision_costs_no_request(trigger, client):
+    """Steady state must be free — this rides a poll that was happening anyway."""
+    client.config_revision = 4
+    client.camera_config = camera_payload(revision=4)
+    trigger.tick()
+    assert client.camera_fetches == 1
+
+    for _ in range(3):
+        trigger.tick()
+    assert client.camera_fetches == 1
+
+
+def test_a_changed_revision_fetches_once_and_applies(trigger, client, cameras):
+    client.config_revision = 7
+    client.camera_config = camera_payload(revision=7, host="192.168.0.200")
+
+    result = trigger.tick()
+
+    assert client.camera_fetches == 1
+    assert "revision 7" in result.camera_sync
+    assert camera_files.load_cameras()["WC2"].host == "192.168.0.200"
+    assert trigger.applied_revision == 7
+
+
+def test_the_applied_revision_survives_a_restart(trigger, client, pool, catalogue, config):
+    """Kept in the catalogue, so a restart does not re-sync a config that has
+    not changed."""
+    client.config_revision = 3
+    client.camera_config = camera_payload(revision=3)
+    trigger.tick()
+
+    fresh = Trigger(pool, client, catalogue=catalogue, config=config)
+    fresh.tick()
+
+    assert client.camera_fetches == 1  # the new trigger did not re-fetch
+
+
+def test_a_refused_list_leaves_the_old_config_working(trigger, client, cameras):
+    """Recording must survive saar-seva being wrong."""
+    before = cameras.read_text()
+    client.config_revision = 2
+    client.camera_config = {"revision": 2, "cameras": [
+        {"odoo_workcenter_id": 12, "name": "Bench 2", "host": "8.8.8.8"},
+    ]}
+
+    result = trigger.tick()
+
+    assert result.ok
+    assert cameras.read_text() == before
+    assert trigger.applied_revision is None  # not marked applied, so it retries
+    assert "shop-network" in trigger.last_sync_error
+
+
+def test_a_failed_fetch_never_stops_recording(trigger, client, pool, cameras):
+    before = cameras.read_text()
+    client.config_revision = 2
+    client.camera_fail_with = "could not reach saar-seva"
+    client.active = [op(12)]
+
+    result = trigger.tick()
+
+    assert result.started == ["WC2"]
+    assert pool.get("WC2").state is State.RECORDING
+    assert cameras.read_text() == before
+
+
+def test_a_saar_seva_without_the_endpoint_is_not_a_fault(trigger, client, cameras):
+    before = cameras.read_text()
+    client.config_revision = 2
+    client.camera_fail_with = "GET /repaircam/cameras failed: HTTP 404"
+    client.camera_fail_status = 404
+
+    result = trigger.tick()
+
+    assert result.ok
+    assert trigger.last_sync_error == ""
+    assert cameras.read_text() == before
+
+
+def test_a_bench_mid_clip_is_not_rewritten_and_the_revision_is_not_banked(trigger, client, pool):
+    """Deferring must not silently become 'applied', or the held-back bench
+    would never receive its change at all."""
+    client.active = [op(12)]
+    trigger.tick()  # WC2 is now recording
+    assert pool.get("WC2").state is State.RECORDING
+
+    client.config_revision = 5
+    client.camera_config = camera_payload(revision=5, host="192.168.0.250")
+    trigger.tick()
+
+    assert camera_files.load_cameras()["WC2"].host == "192.168.0.133"  # untouched
+    assert trigger.applied_revision is None
+
+    client.active = []
+    trigger.tick()  # the clip finishes
+    trigger.tick()  # ...and now the change lands
+    assert camera_files.load_cameras()["WC2"].host == "192.168.0.250"
+    assert trigger.applied_revision == 5
+
+
+def test_a_saar_seva_that_sends_no_revision_never_triggers_a_sync(trigger, client):
+    """An older server must not look like revision 0 and cause a pointless
+    re-sync on every poll."""
+    client.config_revision = None
+    trigger.tick()
+    assert client.camera_fetches == 0

@@ -37,6 +37,29 @@
     <dd class="{{ 'warn-text' if trigger.ok is false else '' }}">
       {{ trigger.summary }}
       {%- if trigger.seconds_since_tick is not none %} ({{ trigger.seconds_since_tick }}s ago){% endif %}</dd>
+    <dt>Camera list</dt>
+    <dd>
+      {% if trigger.config_sync_error %}
+        <span class="warn-text">not applied &mdash; {{ trigger.config_sync_error }}</span>
+      {% elif trigger.config_revision_applied is none %}
+        <span class="muted">central list not in use</span>
+      {% else %}
+        revision {{ trigger.config_revision_applied }}
+        {%- if trigger.config_revision_seen is not none
+               and trigger.config_revision_seen != trigger.config_revision_applied %}
+          <span class="warn-text">&mdash; revision {{ trigger.config_revision_seen }} is waiting</span>
+        {%- endif %}
+        {%- if trigger.config_sync_summary %}
+          <div class="muted small">{{ trigger.config_sync_summary }}</div>
+        {%- endif %}
+      {% endif %}
+      {% if trigger.config_sync_waiting %}
+        <div class="warn-text small">
+          Waiting for {{ trigger.config_sync_waiting|join(', ') }} to finish recording
+          before changing {{ 'it' if trigger.config_sync_waiting|length == 1 else 'them' }}.
+        </div>
+      {% endif %}
+    </dd>
     {% if trigger.owned %}
     <dt>Auto-recording</dt>
     <dd>{% for wc, key in trigger.owned.items() %}<b>{{ wc }}</b> {{ key }}{% if not loop.last %}, {% endif %}{% endfor %}</dd>

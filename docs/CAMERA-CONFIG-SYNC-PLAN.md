@@ -4,7 +4,8 @@ Maintain the bench→camera list in saar-seva's admin panel instead of by editin
 `cameras.yaml` over SSH. The recorder picks changes up on the poll it already
 makes.
 
-**Nothing here is built yet.** This is the plan.
+**BUILT — 2026-07-29.** Both halves are in their repos; nothing has yet run in
+the shop. This document is now the description, not the plan.
 
 ---
 
@@ -240,6 +241,37 @@ service change what the recorder points at:
 
 ---
 
+## What was actually built
+
+**saar-seva** — `backend/app/camera_config.py` (the store, the encryption and
+the validation), `routers/repaircam_config.py` (`GET /repaircam/cameras`),
+`GET`/`PUT /admin/repaircam-cameras` in `routers/admin_trc.py`, a "Cameras ↔
+work centres" card in `AdminTrcSettings.jsx`, and `config_revision` on both
+active polls. `REPAIRCAM_CONFIG_KEY` in `config.py`; `cryptography` named in
+requirements rather than relied on transitively.
+
+**RepairCam** — `camerasync.py` (validate, merge, atomic write), the revision
+check in `trigger.py`, `fetch_camera_config()` in `saarseva.py`, a `settings`
+table in the catalogue holding the applied revision, `cli.py cameras --sync`,
+and the sync state on the status page.
+
+### Two things the build changed from the plan
+
+- **`ipaddress.is_private` is not the rule.** It also accepts loopback,
+  link-local and the RFC 5737 documentation ranges — `203.0.113.5` reads as a
+  perfectly ordinary address and would have been accepted by both ends. Both
+  now check membership of 192.168/16, 10/8 and 172.16/12 explicitly.
+- **Revision 0 means "no central list", not "an empty one".** Fetching and then
+  refusing an empty list on every poll is what a shop that has not adopted this
+  would otherwise see in its log, forever.
+
+### And one the plan had backwards
+
+The plan said to merge passwords from a local `camera-secrets.yaml`. That was
+left over from before passwords went central; there is no such file. Passwords
+come from the central payload, and a blank one keeps whatever `cameras.yaml`
+already had — the rule that matters is unchanged, its source is not.
+
 ## Sequencing
 
 This is a convenience feature. It saves SSH trips when there are several benches;
@@ -261,5 +293,9 @@ free is ~113 bench-hours, which is three weeks at one bench and under a week at
 three. A full disk stops recording mid-repair. Central config is convenience;
 storage is data loss.
 
-Build it when bench 2 and 3 arrive — by then it saves real trips, and the storage
-work will have been done.
+Built anyway, on the owner's call. It is ready for bench 2 and 3 rather than
+waiting for them.
+
+That leaves **storage** as the next real item, and it is the one that loses
+data: nothing deletes or moves old clips, 204 GB free is ~113 bench-hours, and a
+full disk stops a recording mid-repair.

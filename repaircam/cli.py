@@ -64,6 +64,9 @@ def _add_label_arguments(parser: argparse.ArgumentParser) -> None:
 
 def cmd_cameras(args: argparse.Namespace) -> int:
     """List configured benches, and optionally test each camera."""
+    if args.sync and _sync_cameras_now() != 0:
+        return 1
+
     cameras = config.load_cameras()
     print(f"{len(cameras)} bench(es) configured in {config.cameras_file()}\n")
     for work_center, camera in sorted(cameras.items()):
@@ -82,6 +85,51 @@ def cmd_cameras(args: argparse.Namespace) -> int:
             ok, message = build_backend(camera).check(timeout=args.timeout)
             print(f"         {OK if ok else BAD} {message}")
         print()
+    return 0
+
+
+def _sync_cameras_now() -> int:
+    """Pull the central camera list and write cameras.yaml. For `cameras --sync`.
+
+    The trigger does this by itself when the revision changes; this exists for
+    when somebody is standing at the box and wants to watch it work, or when
+    the trigger is not running at all.
+    """
+    from . import camerasync
+    from .recorder import RecorderPool
+
+    try:
+        saar_config = saarseva.load_config()
+    except ConfigError as exc:
+        print(f"{BAD} {exc}", file=sys.stderr)
+        return 1
+
+    client = saarseva.SaarSevaClient(saar_config)
+    try:
+        payload = client.fetch_camera_config()
+    except saarseva.SaarSevaError as exc:
+        print(f"{BAD} could not fetch the camera list: {exc}", file=sys.stderr)
+        return 1
+
+    # A bench mid-clip is left exactly as it is; rewriting the file under a
+    # running ffmpeg helps nobody.
+    busy: set[str] = set()
+    try:
+        pool = RecorderPool(Catalogue())
+        busy = {wc for wc, s in pool.statuses().items() if s.get("busy")}
+    except Exception:  # no cameras yet, first ever sync
+        pass
+
+    try:
+        result = camerasync.apply(payload, busy=busy)
+    except camerasync.CameraSyncError as exc:
+        print(f"{BAD} refused: {exc}", file=sys.stderr)
+        print("     cameras.yaml is unchanged.", file=sys.stderr)
+        return 1
+
+    print(f"{OK} {result.summary()}")
+    if result.deferred:
+        print("     Those benches are recording; run this again when they finish.")
     return 0
 
 
@@ -411,6 +459,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
         help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
+    p.add_argument(
+        "--sync", action="store_true",
+        help="fetch the central camera list from saar-seva and apply it now",
     )
     p.set_defaults(func=cmd_cameras)
 

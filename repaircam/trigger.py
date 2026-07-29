@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from . import camerasync
 from . import config as camera_config
 from .catalogue import Catalogue, Recording
 from .recorder import RecorderError, RecorderPool, State
@@ -50,11 +51,16 @@ class TickResult:
     #: Kinds of work whose poll did not answer this tick. Their benches were
     #: deliberately left alone rather than treated as finished.
     partial: list[str] = field(default_factory=list)
+    #: Set when the central camera list was applied on this tick.
+    camera_sync: str = ""
     skipped: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
-        return bool(self.started or self.finished or self.links_posted or self.links_failed)
+        return bool(
+            self.started or self.finished or self.links_posted
+            or self.links_failed or self.camera_sync
+        )
 
     def summary(self) -> str:
         if not self.ok:
@@ -73,6 +79,8 @@ class TickResult:
             bits.append(f"links GIVEN UP ON: {len(self.links_failed)}")
         if self.partial:
             bits.append(f"NO ANSWER for {', '.join(self.partial)} — those benches left alone")
+        if self.camera_sync:
+            bits.append(f"cameras {self.camera_sync}")
         return "; ".join(bits)
 
 
@@ -109,6 +117,8 @@ class Trigger:
         self._thread: threading.Thread | None = None
         self.last_result: TickResult | None = None
         self.last_tick_at: float = 0.0
+        self.last_sync: camerasync.SyncResult | None = None
+        self.last_sync_error: str = ""
 
     def reload_benches(self) -> dict[int, str]:
         """Rebuild the work-centre -> bench map from cameras.yaml.
@@ -183,6 +193,10 @@ class Trigger:
                     )
                     continue
                 self._finish(work_center, result, reason="no longer active")
+
+        # Before the links, and before the heartbeat, so a bench added centrally
+        # can start being filmed on this very tick.
+        self._sync_cameras(result)
 
         self._post_pending_links(result)
         # After reconciling, so what is reported is the state the benches are
@@ -370,6 +384,81 @@ class Trigger:
             self._operations.pop(recording.id, None)
             result.links_posted.append(recording.id)
 
+    #: Catalogue key holding the camera-list revision this box has applied, so
+    #: a restart does not re-sync a config that has not changed.
+    REVISION_KEY = "camera_config_revision"
+
+    @property
+    def applied_revision(self) -> int | None:
+        raw = self.catalogue.get_setting(self.REVISION_KEY, "")
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _sync_cameras(self, result: TickResult) -> None:
+        """Fetch and apply the central camera list, if it has changed.
+
+        Costs nothing in steady state: the revision rides the poll that just
+        happened, and this returns immediately unless it moved.
+
+        Nothing here may cost footage. A refused or unreachable list leaves
+        cameras.yaml exactly as it was, and the next revision change tries
+        again — the same rule the rest of the trigger follows.
+        """
+        seen = getattr(self.client, "last_config_revision", None)
+        if seen is None:
+            return  # a saar-seva too old to send one; nothing to do
+        if not seen:
+            # Revision 0 means nobody has ever saved a camera list. That is the
+            # normal state of a shop not using the feature, not something to
+            # fetch and then refuse for being empty on every single poll.
+            return
+        if seen == self.applied_revision:
+            return
+
+        try:
+            payload = self.client.fetch_camera_config()
+        except SaarSevaError as exc:
+            if exc.status == 404:
+                log.debug("saar-seva has no central camera list yet")
+                return
+            self.last_sync_error = str(exc)
+            log.warning("could not fetch the camera list: %s", exc)
+            return
+
+        # A bench mid-clip is never rewritten under ffmpeg. Those benches are
+        # reported as deferred, and the revision stays unapplied so this runs
+        # again when they go idle.
+        busy = {
+            work_center
+            for work_center, status in self.pool.statuses().items()
+            if status.get("busy")
+        }
+
+        try:
+            sync = camerasync.apply(payload, busy=busy)
+        except camerasync.CameraSyncError as exc:
+            self.last_sync_error = str(exc)
+            log.error("refused the camera list: %s", exc)
+            return
+        except OSError as exc:
+            self.last_sync_error = f"could not write cameras.yaml: {exc}"
+            log.error("%s", self.last_sync_error)
+            return
+
+        self.last_sync_error = ""
+        self.last_sync = sync
+        result.camera_sync = sync.summary()
+
+        if sync.changed:
+            self.reload_benches()
+        if sync.complete:
+            self.catalogue.set_setting(self.REVISION_KEY, str(sync.revision))
+            self.catalogue.log_event("camera-sync", detail=sync.summary())
+        else:
+            log.info("camera sync partly held back: %s", sync.summary())
+
     #: What a bench's light should show, from what the camera is really doing.
     #: `recording` is deliberately NOT "the timer is running" — see the note in
     #: SaarSevaClient.post_heartbeat.
@@ -454,7 +543,13 @@ class Trigger:
     def status(self) -> dict:
         """For the status page."""
         result = self.last_result
+        sync = self.last_sync
         return {
+            "config_revision_applied": self.applied_revision,
+            "config_revision_seen": getattr(self.client, "last_config_revision", None),
+            "config_sync_summary": sync.summary() if sync else "",
+            "config_sync_error": self.last_sync_error,
+            "config_sync_waiting": list(sync.deferred) if sync else [],
             "running": self.running,
             "base_url": self.config.base_url,
             "poll_seconds": self.config.poll_seconds,

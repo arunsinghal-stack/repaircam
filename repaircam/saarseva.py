@@ -318,6 +318,9 @@ class SaarSevaClient:
         self.config = config
         # Injectable so tests never touch the network.
         self._opener = opener or urllib.request.urlopen
+        #: Camera-list revision last seen on a poll. None until saar-seva sends
+        #: one — an older server that never does must not look like revision 0.
+        self.last_config_revision: int | None = None
 
     # -- plumbing -----------------------------------------------------------
 
@@ -357,6 +360,20 @@ class SaarSevaClient:
         except json.JSONDecodeError as exc:
             raise SaarSevaError(f"{path} did not return JSON: {exc}") from exc
 
+    def _note_revision(self, payload: Any) -> None:
+        """Remember the camera-list revision that rode in on this poll.
+
+        Kept on the client rather than threaded through ``parse_active`` so
+        those stay pure functions over the wire format — and so a saar-seva too
+        old to send it simply leaves the last value alone rather than looking
+        like revision 0, which would trigger a pointless re-sync.
+        """
+        if isinstance(payload, dict) and "config_revision" in payload:
+            try:
+                self.last_config_revision = int(payload["config_revision"])
+            except (TypeError, ValueError):
+                log.debug("ignoring an unreadable config_revision")
+
     # -- contract -----------------------------------------------------------
 
     def fetch_active(self, workcenter_ids: list[int] | None = None) -> list[ActiveOperation]:
@@ -368,14 +385,18 @@ class SaarSevaClient:
         params = {}
         if workcenter_ids:
             params["workcenters"] = ",".join(str(i) for i in sorted(set(workcenter_ids)))
-        return parse_active(self._request("GET", "/trc/active", params=params or None))
+        payload = self._request("GET", "/trc/active", params=params or None)
+        self._note_revision(payload)
+        return parse_active(payload)
 
     def fetch_active_packing(self, workcenter_ids: list[int] | None = None) -> list[ActiveOperation]:
         """Which packing benches are filming right now."""
         params = {}
         if workcenter_ids:
             params["workcenters"] = ",".join(str(i) for i in sorted(set(workcenter_ids)))
-        return parse_active_packing(self._request("GET", "/pack/active", params=params or None))
+        payload = self._request("GET", "/pack/active", params=params or None)
+        self._note_revision(payload)
+        return parse_active_packing(payload)
 
     def post_packing_recording(self, recording: Recording) -> bool:
         """Hand a finished packing clip's link to saar-seva.
@@ -435,6 +456,20 @@ class SaarSevaClient:
 
         self._request("POST", "/trc/recordings", body=body)
         return True
+
+    def fetch_camera_config(self) -> dict:
+        """The whole camera list, including passwords.
+
+        Only called when the ``config_revision`` seen on an ordinary poll
+        differs from the one this box last applied, so in steady state it is
+        never called at all.
+        """
+        payload = self._request("GET", "/repaircam/cameras")
+        if not isinstance(payload, dict):
+            raise SaarSevaError(
+                f"expected a camera list, got {type(payload).__name__}"
+            )
+        return payload
 
     def post_heartbeat(self, benches: list[dict]) -> bool:
         """Tell saar-seva what each bench's camera is ACTUALLY doing.

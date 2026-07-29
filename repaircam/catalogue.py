@@ -61,6 +61,11 @@ CREATE INDEX IF NOT EXISTS idx_recordings_mo      ON recordings(mo_name);
 CREATE INDEX IF NOT EXISTS idx_recordings_imei    ON recordings(imei);
 CREATE INDEX IF NOT EXISTS idx_recordings_started ON recordings(started_at DESC);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     ts           TEXT NOT NULL,
@@ -419,6 +424,25 @@ class Catalogue:
                 (limit,),
             ).fetchall()
         return [self._to_recording(row) for row in rows]
+
+    # -- small persistent settings -----------------------------------------
+    #
+    # Only for things that must survive a restart but are not worth a file of
+    # their own — today, the camera-list revision this box has applied, so a
+    # restart does not re-sync a config that has not changed.
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)),
+            )
 
     def count(self) -> int:
         with self.connect() as conn:
