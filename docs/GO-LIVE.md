@@ -120,6 +120,57 @@ sudo systemctl start repaircam
 
 ---
 
+## The live tests
+
+Ordered by what it costs to be wrong. Nothing below takes long; the point is
+that each one has a definite answer, and several of these have never been run
+anywhere at all.
+
+### A. Proven on staging — re-prove on production
+
+Production is a different database with different settings, so none of this
+carries over on its own.
+
+| # | Test | Pass looks like |
+|---|---|---|
+| A1 | Technician presses Start on `/trc/time` | Their screen turns 🔴 **Recording** beside the `⏱ running` pill, and the bench page agrees |
+| A2 | Let it run a minute, press Stop | The clip appears in the Library at its real length |
+| A3 | Open that job in Odoo | A chatter line with a link; the link opens the clip |
+| A4 | Do a second operation on the same job | A second clip, a second chatter line — one clip per timer session |
+
+### B. Never run anywhere — the honest failures
+
+These are the ones the whole design rests on. If any fails, the system is
+lying to a technician and that is worse than not having it.
+
+| # | Test | Pass looks like |
+|---|---|---|
+| B1 | **Stop the recorder mid-recording** (`sudo systemctl stop repaircam`) | The light on the technician's screen goes **grey within 20s** — *"Recorder not reporting · no word for Ns"*, the number climbing. **Never stays red.** |
+| B2 | **Unplug a camera, then press Start** | 🟠 amber *"connecting to camera"*, timer stuck at 0:00:00, and after 5s a warning. **Never red.** |
+| B3 | **Power-cut a recording** (`pkill -9 ffmpeg`, then `ffprobe` the segment) | The file plays. `moov atom not found` means every power cut costs the clip in flight — a real defect, not a test failure |
+| B4 | **Pull the recorder's network cable** while a technician records | Recording continues. A failed poll must never be read as "nothing is running" |
+
+### C. Built, never used in the shop
+
+| # | Test | Pass looks like |
+|---|---|---|
+| C1 | Add a camera in Admin → **Cameras ↔ work centres**, save | Within ~5s the recorder has it: `cli cameras` lists it, `/status` shows the new revision |
+| C2 | Untick **In use** on a bench | It disappears from the recorder; the row survives centrally |
+| C3 | Change a bench's IP **while it is recording** | Nothing changes until that clip finishes; `/status` says it is waiting |
+| C4 | Packing: packer opens a job, presses **Start packing**, then **Record this pack** | Light red; Stop saves; the link lands on the **outgoing** Delivery Order's chatter |
+| C5 | Packing: press Record, then **Complete** the order mid-recording | The panel stays with a warning and **Stop still works** |
+| C6 | Packing: two Record/Stop pairs on one order | Two clips, two chatter lines on the same DO |
+
+### D. Worth proving once, then forgetting
+
+| # | Test | Pass looks like |
+|---|---|---|
+| D1 | Reboot the recorder box | It comes back recording-ready on its own; `/status` reachable without anyone logging in |
+| D2 | Reboot **while** a recording is running, then `cli recover` | The orphaned segments are listed and can be filed as a clip |
+| D3 | An unmapped technician opens `/trc/time` | They see no jobs — and the reason is visible to a manager, not silent |
+
+---
+
 ## Known, and accepted
 
 Nothing here blocks going live. All of it is worth knowing on the day.
