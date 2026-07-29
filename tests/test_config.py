@@ -224,3 +224,54 @@ def test_a_refused_connection_is_named_as_such(monkeypatch):
 
     assert ok is False
     assert "RTSP" in message
+
+
+# --------------------------------------------------------------------------
+# passwords must not escape, in either direction
+# --------------------------------------------------------------------------
+
+
+def test_ffmpeg_output_is_redacted_before_anyone_sees_it():
+    """ffmpeg quotes the whole stream URL in its errors, so "No route to host"
+    arrives with the camera password attached — and that text goes on to the
+    terminal, the status page, the catalogue and the log."""
+    from repaircam.ffmpeg import redact_text
+
+    leak = "rtsp://admin:Admin%40321@192.168.1.183:554/stream2: No route to host"
+    safe = redact_text(leak)
+
+    assert "Admin%40321" not in safe
+    assert "admin:******@192.168.1.183" in safe
+    assert "No route to host" in safe  # the useful part survives
+
+
+def test_redaction_leaves_ordinary_text_alone():
+    from repaircam.ffmpeg import redact_text
+
+    assert redact_text("Connection timed out") == "Connection timed out"
+    assert redact_text("") == ""
+    assert "192.168.1.184" in redact_text("rtsp://192.168.1.184:554/stream1 failed")
+
+
+def test_a_url_with_no_password_keeps_its_user():
+    from repaircam.ffmpeg import redact_text
+
+    assert redact_text("rtsp://admin@10.0.0.1/x") == "rtsp://admin@10.0.0.1/x"
+
+
+def test_a_password_containing_an_at_sign_is_fully_masked():
+    """RTSP URLs we build percent-encode it, but ffmpeg may echo anything, and a
+    pattern that stops at the first @ leaves the rest of the password on screen."""
+    from repaircam.ffmpeg import redact_text
+
+    safe = redact_text("Could not open rtsp://admin:p@ss:word@10.0.0.5:554/stream1")
+    assert "p@ss" not in safe and "word" not in safe
+    assert "rtsp://admin:******@10.0.0.5:554/stream1" in safe
+
+
+def test_several_urls_in_one_message_are_all_masked():
+    from repaircam.ffmpeg import redact_text
+
+    safe = redact_text("rtsp://admin:x@a/1 and rtsp://root:y@b/2 both failed")
+    assert "x@" not in safe and ":y@" not in safe
+    assert safe.count("******") == 2
