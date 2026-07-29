@@ -30,6 +30,10 @@ class RtspCapture(ActiveCapture):
         self._segment: Segment | None = None
 
     @property
+    def dest(self) -> Path:
+        return self._process.dest
+
+    @property
     def running(self) -> bool:
         return self._process.running
 
@@ -57,7 +61,10 @@ class RtspCapture(ActiveCapture):
 
         self._segment = Segment(
             path=path,
-            started_at=self._process.started_at,
+            # The clock starts at the first frame, not at Popen — otherwise the
+            # time spent connecting is counted as footage that does not exist,
+            # and every clip's duration is a little long.
+            started_at=self.capture_started_at or self._process.started_at,
             ended_at=time.time(),
             ok=ok,
             error=error,
@@ -92,13 +99,14 @@ class RtspBackend(CaptureBackend):
         )
         return RtspCapture(ffmpeg.RecordingProcess(command, dest))
 
-    def snapshot(self, dest: Path) -> Path:
-        # Snapshots come off the sub-stream so they cost the camera almost
-        # nothing while a recording is running on the main stream.
+    def snapshot(self, dest: Path, *, stream: str = "main") -> Path:
+        use_sub = stream == "sub"
+        url = self.camera.sub_url if use_sub else self.camera.main_url
+        safe = self.camera.safe_sub_url if use_sub else self.camera.safe_main_url
         try:
-            return ffmpeg.snapshot(self.camera.sub_url, dest)
+            return ffmpeg.snapshot(url, dest)
         except ffmpeg.FFmpegError as exc:
-            raise CaptureError(f"snapshot from {self.camera.safe_sub_url} failed: {exc}") from exc
+            raise CaptureError(f"snapshot from {safe} failed: {exc}") from exc
 
     def preview_frames(self, *, fps: int = 6, width: int = 640) -> Iterator[bytes]:
         """Yield whole JPEG frames from the sub-stream until the caller stops."""
@@ -133,8 +141,10 @@ class RtspBackend(CaptureBackend):
             except subprocess.TimeoutExpired:
                 proc.kill()
 
-    def check(self) -> tuple[bool, str]:
-        return ffmpeg.reachable(self.camera.sub_url)
+    def check(self, *, timeout: float | None = None) -> tuple[bool, str]:
+        if timeout is None:
+            return ffmpeg.reachable(self.camera.sub_url)
+        return ffmpeg.reachable(self.camera.sub_url, timeout=timeout)
 
     def concat(self, segments: list[Segment], dest: Path) -> Path:
         """Join this operation's segments with ffmpeg's concat demuxer.
@@ -151,22 +161,10 @@ class RtspBackend(CaptureBackend):
             usable[0].path.replace(dest)
             return dest
 
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        list_file = dest.with_suffix(".concat.txt")
-        # The concat demuxer's own quoting rule: wrap in single quotes and
-        # escape any single quote in the path.
-        lines = ["file '" + str(s.path.resolve()).replace("'", r"'\''") + "'" for s in usable]
-        list_file.write_text("\n".join(lines) + "\n")
-
         try:
-            ffmpeg.run(
-                ffmpeg.concat_command(list_file, dest, audio_codec="copy"),
-                timeout=max(120, 10 * len(usable)),
-            )
+            ffmpeg.concat_files([s.path for s in usable], dest)
         except ffmpeg.FFmpegError as exc:
             raise CaptureError(f"joining {len(usable)} segments failed: {exc}") from exc
-        finally:
-            list_file.unlink(missing_ok=True)
 
         for segment in usable:
             segment.path.unlink(missing_ok=True)

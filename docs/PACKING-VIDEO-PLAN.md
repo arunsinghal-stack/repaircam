@@ -1,0 +1,195 @@
+# Packing video — plan
+
+Record the packing of an order, and put the video's link on the Delivery Order's
+Odoo chatter. Same idea as the repair-bench recording (Phase 5), different job.
+
+**Both halves are built.** saar-seva's are in
+`arunsinghal-stack/saar-seva-app` branch `claude/packing-video-endpoints`;
+RepairCam's are in `saarseva.py` / `trigger.py`. Not yet run against a real
+camera or a real Odoo.
+
+---
+
+## What the packer does
+
+1. Opens their packing job in saar-seva (already exists).
+2. Presses **Record** — RepairCam starts filming the packing bench.
+3. Presses **Stop** — the clip is saved and its link goes to the Odoo DO chatter.
+4. Can do this **as many times as needed** on the same order. Each Start→Stop is
+   its own clip, and each gets its own line in the chatter.
+
+Recording is deliberately *not* tied to the packing status. A packer can film a
+box being sealed, stop, film another box, stop. It is an evidence button, not a
+workflow step.
+
+---
+
+## Which picking gets the link
+
+There are two shapes an order can take after the SO is confirmed:
+
+| | Pickings created | Where the link goes |
+|---|---|---|
+| **One-step** | one `outgoing` picking (WH/OUT) | that one |
+| **Two-step** | `internal` (WH/PICK) **+** `outgoing` (WH/OUT) | the **OUT** only |
+
+**The rule is one line: always post to the *outgoing* picking.** In the two-step
+case the PICK is an internal transfer — it is not the customer's delivery, and a
+video on it would be filed against the wrong document.
+
+saar-seva already knows how to tell them apart. `_is_outgoing()` exists twice
+(`routers/warehouse.py:1917`, `routers/admin.py:4437`) and checks
+`picking_type_code == "outgoing"`, falling back to the type name for Odoo builds
+that do not expose the code. **Reuse it — do not write a third copy.**
+
+### The link can be posted immediately
+
+The outgoing picking is created when the SO is confirmed, in both shapes. In the
+two-step case it sits in `waiting` until the PICK completes, but it **exists**,
+so it can be found and posted to during packing.
+
+This matters because `PackingJob.odoo_do_picking_id` is only filled in at
+*dispatch* (`warehouse.py:8940`) — long after packing. Waiting for that would
+leave the video invisible in Odoo for hours or days. So:
+
+- **Resolve the outgoing picking at Stop time** from the order's
+  `sale.order.picking_ids` (`odoo.py:2834` already reads these) and post at once.
+- **If it cannot be found**, keep the clip unposted and retry later — the same
+  mechanism the repair flow already uses. The footage is never lost; only its
+  chatter line is late.
+
+---
+
+## Part A — saar-seva backend
+
+### A1. New table `packing_recording`
+
+`PackingJob` has single-value columns and cannot hold several recordings, so
+this needs its own table. It mirrors `repair_time_log`, which the repair flow
+already keys on.
+
+| column | why |
+|---|---|
+| `id` | identity of one recording session — what RepairCam keys on |
+| `packing_job_id` | FK to `packing_job` |
+| `station` | which packing bench/camera (see Part C) |
+| `started_at`, `ended_at`, `active` | the Start/Stop state RepairCam polls |
+| `started_by_exec_id` | who filmed it |
+| `repaircam_recording_id`, `repaircam_url` | the clip, once it exists |
+| `odoo_picking_id`, `odoo_picking_name` | the OUT it was posted to |
+| `posted_at` | set once the chatter line is written — makes retries idempotent |
+
+Added via the existing `_COLUMN_PATCHES` / `Base.metadata.create_all` path, like
+every other table in that repo.
+
+### A2. The two buttons
+
+```
+POST /warehouse/packer/jobs/{job_id}/record/start   -> creates a row, active=true
+POST /warehouse/packer/jobs/{job_id}/record/stop    -> closes it, active=false
+```
+
+Both gated on `_require_packer`, the same dependency the rest of that screen
+uses. `start` refuses if that station already has an active recording.
+
+### A3. What RepairCam polls
+
+```
+GET /pack/active        (auth: REPAIRCAM_API_KEY, already merged in PR #461)
+```
+
+Returns the recordings currently `active`, each with: `recording_id` (the
+`packing_recording.id`), `station`, `order_ref`, `so_name`, `packing_job_id`,
+`ship_to_name`, `started_at`.
+
+Kept separate from `/trc/active` rather than merged into it: the two have
+different identities and different labels, and one endpoint answering for two
+unrelated jobs gets confusing fast.
+
+### A4. Where the link lands
+
+```
+POST /pack/recordings   {recording_id, url, duration_s, recorded_at}
+```
+
+1. Find the `packing_recording` row.
+2. Already has `posted_at`? Return `{"ok": true, "duplicate": true}`, write nothing.
+3. Resolve the order's **outgoing** picking (reusing `_is_outgoing`).
+4. `odoo.post_do_chatter(picking_id, note)` — the helper already exists at
+   `odoo.py:6791` and already handles the Odoo 19 `message_post` marshalling fault.
+5. Only on success, store the url + picking id + `posted_at`. **On failure return
+   502 and store nothing**, so the retry is not mistaken for a duplicate.
+
+---
+
+## Part B — saar-seva frontend
+
+On the packer's job screen: a **Record** / **Stop** button and a short list of
+the clips already taken for this job, each a link. Small change — the screen and
+its API calls already exist.
+
+---
+
+## Part C — RepairCam
+
+Small changes; the recorder itself is untouched.
+
+- **`cameras.yaml` needs no new field.** Packing benches are Odoo work centres,
+  exactly like repair benches, so the existing `odoo_workcenter_id` covers both
+  and several packing stations work from day one.
+- **The trigger polls `/pack/active` as well as `/trc/active`** and merges them:
+  one bench map, one reconcile. A saar-seva without the packing endpoints
+  answers 404, which is treated as "not deployed yet" so repair recording
+  carries on; any other packing failure still aborts the tick, because a
+  partial picture must never read as "nothing is running".
+- **The catalogue remembers the source.** `recordings.source` ('repair' /
+  'packing') and `source_ref` (saar-seva's own id) are stored on the row, so a
+  restart before the link is posted still knows which endpoint it belongs to.
+  Schema v2; existing databases are migrated with ALTER TABLE on open.
+
+Everything else — capture, catalogue, sidecars, the never-lose-footage rules,
+the link retry — is reused as-is.
+
+---
+
+## Part D — how it gets verified
+
+Same approach as Phase 5, which caught three real contract bugs before they
+reached the shop:
+
+- saar-seva side against a live app with SQLite and Odoo mocked: auth, the active
+  list, **one-step vs two-step picking selection**, idempotency, and that a failed
+  Odoo write leaves the row unposted so the retry works.
+- RepairCam's real client driven against the real endpoints in one process:
+  Record → film → Stop → clip filed → link posted → chatter written once.
+- RepairCam's own suite stays green (141 tests).
+
+The two-step case deserves an explicit test with **both** pickings present,
+asserting the note lands on the OUT and never on the PICK.
+
+---
+
+## Open questions
+
+1. **How many packing stations?** The plan assumes one, named in `cameras.yaml`.
+   More than one means the packer must say which bench they are at — a UI change
+   and a field on the recording.
+2. **Split orders.** A `PackingJob` can be per-warehouse (`so_ref_id`), so an
+   order can have several outgoing pickings. The plan posts to the OUT belonging
+   to that job's warehouse. Confirm this is what you want.
+3. **Retention.** Packing clips land on the same disk as repair clips, and there
+   is still no retention job. Packing video will make it fill faster.
+
+---
+
+## Sequencing
+
+This is a second integration on a recorder that **has not yet captured a single
+real frame**. If the focus test fails or real MP4 handling misbehaves, both
+integrations get reshaped.
+
+Recommended order:
+
+1. The three bench checks (focus, a real 20s clip, a real pause-and-resume) — 30 minutes.
+2. Phase 5 switched on and proven with one real repair.
+3. This.

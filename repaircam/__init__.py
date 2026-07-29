@@ -13,6 +13,16 @@ rest moving:
     web/        the Flask UI technicians and the owner actually look at
 """
 
+import sys
+
+MINIMUM_PYTHON = (3, 8)
+if sys.version_info < MINIMUM_PYTHON:
+    raise RuntimeError(
+        f"RepairCam needs Python {'.'.join(map(str, MINIMUM_PYTHON))} or newer, "
+        f"but this is Python {'.'.join(map(str, sys.version_info[:3]))}.\n"
+        f"On the recorder box:  sudo apt install -y python3 python3-venv"
+    )
+
 __version__ = "0.2.0"
 
 SCHEMA_VERSION = 1

@@ -170,7 +170,7 @@ preview must never take bandwidth from a recording in progress.
 them, because an unlabelled clip is nearly useless for goal 3 and the count is the
 nudge to fix it.
 
-## 6. Phase 5 — the saar-seva / Odoo trigger (not built)
+## 6. Phase 5 — the saar-seva / Odoo trigger (RepairCam half built)
 
 Today a technician presses Start in two places: saar-seva (for time tracking) and
 RepairCam (for video). Phase 5 removes the second one.
@@ -198,7 +198,12 @@ into the shop, so **RepairCam polls saar-seva** — not the other way round.
   saar-seva writes the link into the Odoo MO chatter (never the video itself)
 ```
 
-Two endpoints have to be added to saar-seva:
+**Status.** RepairCam's half is built and tested: `saarseva.py` is the polling client,
+`trigger.py` reconciles the recorders against what saar-seva reports, and `cli.py
+trigger` exercises it. It stays switched off until `repaircam/saarseva.yaml` exists.
+The precise wire contract is in [PHASE5-CONTRACT.md](PHASE5-CONTRACT.md).
+
+Two endpoints still have to be added to saar-seva:
 
 - `GET /trc/active` → the operations currently running, each with work center, MO
   name, operation, and the device/IMEI from the existing `stock.lot` lookup.
@@ -227,7 +232,14 @@ Points to get right when building it:
   dependency.
 - **The link is a LAN URL.** It only opens inside the shop — which is the point.
 - **`link_posted` already exists** on the recordings table for marking a clip whose
-  link has reached the chatter, so a retry does not post it twice.
+  link has reached the chatter, so a retry does not post it twice. Retries are driven
+  from `Catalogue.list_unposted()`, not from memory, so a clip finished just before a
+  restart is still posted afterwards.
+- **A failed poll must never end a recording.** `Trigger.tick()` returns without
+  touching any recorder when the poll fails; treating an error as "nothing is running"
+  would stop every bench in the shop the moment the internet hiccups.
+- **A manual recording is never taken over or stopped.** The trigger only ends benches
+  it started itself, so a technician recording by hand cannot have their clip cut.
 
 ## 7. Hardware and capacity
 
@@ -267,11 +279,105 @@ ffmpeg command construction, and every web route.
 What is **not** covered and can only be checked on the shop LAN: real RTSP capture,
 real concat of real MP4s, MJPEG preview, and focus.
 
-## 9. Open items
+## 9. Running it as a service
 
-- **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
-  enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
+`deploy/repaircam.service` is a template; `deploy/install-service.sh` fills in the
+user, paths, port and data directory and installs it. The script checks that the
+virtualenv, Flask, ffmpeg and cameras.yaml are actually in place *before* handing the
+unit to systemd, because a service that fails at boot is much harder for a
+non-technical owner to diagnose than a script that refuses up front.
+
+Choices worth keeping:
+
+- **Runs as the ordinary shop user, not root.** Recordings live in that user's home
+  directory and nothing here needs administrator powers.
+- **`Wants=network-online.target`**, not plain `network.target` — the latter is
+  satisfied before an address is assigned, and RepairCam is useless until it can
+  reach the cameras.
+- **`StartLimitIntervalSec=0` in `[Unit]`.** systemd's default gives up permanently
+  after a few rapid restarts; a camera unplugged overnight would leave the shop with
+  a dead recorder in the morning. Note the section: systemd *silently ignores* this
+  key under `[Service]`, which is easy to get wrong and impossible to notice without
+  `systemd-analyze verify`.
+- **`TimeoutStopSec=30`.** On stop, systemd signals every process in the cgroup,
+  including ffmpeg, which finalises its MP4 on SIGTERM. Rushing this corrupts clips.
+- **Hardening stops at `ProtectSystem=full`.** ffmpeg spawns subprocesses and writes
+  video into the home directory; a lockdown that breaks recording is worse than no
+  lockdown.
+
+**A restart part-way through an operation loses the in-memory session.** The segments
+survive in `segments/` and each is a valid MP4, but nothing joins or catalogues them.
+`repaircam/recovery.py` and `cli.py recover` adopt those orphans — see section 10.
+
+## 10. Recovering orphaned footage
+
+`recovery.py` finds segment folders that never became a clip — a folder only survives
+there if Done was never reached — and files them through the *same* `finalise_session`
+path as a normal Done, so a rescued clip is indistinguishable from an ordinary one
+apart from `"recovered": true` in its sidecar.
+
+The stakes are the opposite of the rest of the system: recovery only ever touches
+footage that already exists and cannot be re-recorded. So it is built to refuse rather
+than risk:
+
+- **A failed join keeps the segments.** Files are deleted only after the join succeeds.
+  Half-recovered footage that has been deleted is worse than footage still orphaned, and
+  a failure (usually a missing ffmpeg) stays retryable.
+- **A folder written to recently is left alone.** Joining a file ffmpeg is still writing
+  would corrupt it, so anything touched within 120s is skipped unless `--force`.
+- **One bad folder does not stop the rest** — they are independent operations that happen
+  to share a fate.
+- **Listing is the default.** `recover` shows what it found and changes nothing;
+  `recover --all` acts.
+- **Rescued clips are unlabelled**, because nobody said what job they were for. The
+  library already surfaces unlabelled clips, which is the nudge to tag them.
+- **Start time comes from the folder name**, which is the recording's start; the sidecar
+  marks it `started_at_is_estimated` because nobody pressed Done to confirm the end.
+- **A bench removed from cameras.yaml still recovers.** The footage is no less real; the
+  sidecar records that the camera is no longer configured.
+
+The `/status` page lists orphans, because they appear in no other page — they are not in
+the library, having never become clips.
+
+## 11. Recording indicator — showing *capture*, not *intent* (BUILT)
+
+The red dot on the bench page used to mean "we asked ffmpeg to start". It now means
+"frames are being written".
+
+The gap is real: after `Popen` returns, ffmpeg still has to resolve the host, open the
+RTSP connection, authenticate, negotiate the stream, wait for a keyframe, and write
+the first bytes of the MP4. Until then nothing is recorded, but the dot pulses and the
+timer counts.
+
+Detecting the true start is simple and backend-agnostic: **the destination file gains
+its first bytes**. Poll `dest.stat().st_size`; once it is non-zero, capture is real.
+It needs no ffmpeg log parsing and works for any future backend that writes a file.
+
+What was built:
+
+- `ActiveCapture.capturing` in `backends/base.py` — it watches `dest` and latches true
+  on the first byte, so a later failed `stat()` cannot make a live recording look dead.
+  Concrete on the base class, so every future backend that writes a file inherits it.
+  `RtspCapture` only has to expose its `dest`.
+- `Recorder.status()` reports `capturing`, `connecting`, `connecting_s`, `camera_slow`
+  and `state_label` alongside `recording`. `recording` still means "Start was pressed";
+  the light follows `capturing`.
+- The bench page and the dashboard show **amber and steady — "connecting to camera"** —
+  between the button press and the first byte, and only then the **blinking red**.
+- After `CONNECT_WARN_S` (5s) of silence the bench page says the camera has sent no
+  video and nothing is being recorded, rather than leave a technician trusting a light
+  that means nothing yet.
+- The elapsed timer counts from the first byte. So does `Segment.started_at`, so a
+  clip's recorded duration no longer includes the time spent connecting.
+
+The same signal is what any *physical* indicator must be wired to — a lamp driven by
+"we pressed a button" would repeat the same lie in hardware. Nothing physical is built;
+if it ever is, it reads `capturing`, not the button.
+
+## 12. Open items
+
 - **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
-- **Phase 5** as above.
+- **Phase 5 has never run for real.** Both halves are built and saar-seva's are merged
+  to its `staging`, but no clip has yet been triggered by a technician's timer.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from
   sidecars, and it can, but the command to do it is not written.

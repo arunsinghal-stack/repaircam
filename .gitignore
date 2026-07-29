@@ -1,6 +1,8 @@
 # --- SECRETS: camera IPs and passwords. Never commit. ---
 repaircam/cameras.yaml
 cameras.yaml
+repaircam/saarseva.yaml
+saarseva.yaml
 
 # Recordings / database (they live in ~/repaircam-data by default, but never
 # commit them even if someone points REPAIRCAM_DATA_DIR at the repo).

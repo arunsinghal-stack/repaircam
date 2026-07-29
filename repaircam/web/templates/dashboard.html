@@ -16,11 +16,12 @@
 
 <div class="bench-grid">
   {% for wc, status in statuses.items() %}
-  <a class="bench-card state-{{ status.state }}" href="{{ url_for('repaircam.bench', work_center=wc) }}"
+  <a class="bench-card state-{{ status.state }}{{ ' connecting' if status.connecting }}"
+     href="{{ url_for('repaircam.bench', work_center=wc) }}"
      data-bench="{{ wc }}">
     <div class="bench-head">
       <h2>{{ wc }}</h2>
-      <span class="pill" data-field="state">{{ status.state }}</span>
+      <span class="pill" data-field="state">{{ status.state_label }}</span>
     </div>
     <p class="muted">{{ cameras[wc].name if wc in cameras else status.camera }}</p>
 
@@ -69,8 +70,9 @@
     Object.entries(data.benches).forEach(function ([wc, status]) {
       var card = document.querySelector('[data-bench="' + wc + '"]');
       if (!card) return;
-      card.className = 'bench-card state-' + status.state;
-      RepairCam.setField(card, 'state', status.state);
+      card.className =
+        'bench-card state-' + status.state + (status.connecting ? ' connecting' : '');
+      RepairCam.setField(card, 'state', status.state_label);
       RepairCam.setField(card, 'elapsed', status.elapsed_hms);
     });
   });

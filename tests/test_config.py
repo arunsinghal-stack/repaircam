@@ -140,3 +140,87 @@ def test_camera_config_defaults():
     assert camera.port == 554
     assert camera.backend == "rtsp"
     assert camera.main_url.startswith("rtsp://admin:@10.0.0.9:554/stream1")
+
+
+# --------------------------------------------------------------------------
+# camera reachability checks — the status page's honesty
+# --------------------------------------------------------------------------
+
+
+def test_quick_probe_caps_how_much_is_read():
+    """A reachability check only needs the stream header. Reading further makes
+    a healthy 4MP camera look like a broken one on a modest recorder."""
+    import subprocess
+    from unittest import mock
+
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    with mock.patch.object(ffmpeg, "run", fake_run), \
+         mock.patch.object(ffmpeg, "require_ffmpeg", lambda: None), \
+         mock.patch("shutil.which", lambda _: "/usr/bin/ffprobe"):
+        ffmpeg.probe("rtsp://x/stream2", quick=True)
+
+    assert "-analyzeduration" in captured["command"]
+    assert "-probesize" in captured["command"]
+
+
+def test_full_probe_does_not_cap_reading():
+    """A finished clip must be probed fully, or its duration comes out short."""
+    import subprocess
+    from unittest import mock
+
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    with mock.patch.object(ffmpeg, "run", fake_run), \
+         mock.patch.object(ffmpeg, "require_ffmpeg", lambda: None), \
+         mock.patch("shutil.which", lambda _: "/usr/bin/ffprobe"):
+        ffmpeg.probe("/data/clip.mp4")
+
+    assert "-analyzeduration" not in captured["command"]
+
+
+def test_the_check_timeout_is_generous():
+    """Ten seconds was too tight for a real 4MP camera on an i3 laptop: the
+    status page called a working camera broken."""
+    assert ffmpeg.DEFAULT_CHECK_TIMEOUT >= 25
+
+
+def test_a_timeout_says_what_to_go_and_check(monkeypatch):
+    def explode(*a, **k):
+        raise ffmpeg.FFmpegError("ffmpeg timed out after 30s")
+
+    monkeypatch.setattr(ffmpeg, "media_summary", explode)
+    ok, message = ffmpeg.reachable("rtsp://x/stream2")
+
+    assert ok is False
+    assert "powered" in message and "cameras.yaml" in message
+
+
+def test_a_rejected_password_is_named_as_such(monkeypatch):
+    def explode(*a, **k):
+        raise ffmpeg.FFmpegError("ffmpeg failed:\n401 Unauthorized")
+
+    monkeypatch.setattr(ffmpeg, "media_summary", explode)
+    ok, message = ffmpeg.reachable("rtsp://x/stream2")
+
+    assert ok is False
+    assert "password" in message
+
+
+def test_a_refused_connection_is_named_as_such(monkeypatch):
+    def explode(*a, **k):
+        raise ffmpeg.FFmpegError("Connection refused")
+
+    monkeypatch.setattr(ffmpeg, "media_summary", explode)
+    ok, message = ffmpeg.reachable("rtsp://x/stream2")
+
+    assert ok is False
+    assert "RTSP" in message

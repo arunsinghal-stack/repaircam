@@ -4,8 +4,9 @@
 #
 # cameras.yaml holds real passwords and is gitignored. NEVER commit it.
 #
-# Rule: 1 Work Center = 1 bench = 1 camera. The key (WC1, WC2, ...) must match
-# the Work Center code in Odoo, because that is what ties a clip to its job.
+# Rule: 1 Work Center = 1 bench = 1 camera. The key (WC1, WC2, ...) is RepairCam's
+# own label — pick anything readable. What ties a bench to its job is the
+# odoo_workcenter_id further down; saar-seva has no "WC2"-style code at all.
 
 cameras:
   WC2:
@@ -24,6 +25,12 @@ cameras:
     # VIGI cameras send pcm_alaw audio, which MP4 cannot hold, so RepairCam
     # transcodes just the audio to AAC. Set false to record video only.
     has_audio: true
+
+    # Which Odoo work centre this bench is. Only needed for the automatic
+    # saar-seva trigger; leave it out and the bench simply never auto-records.
+    # Find the number in Odoo: Manufacturing > Configuration > Work Centers,
+    # open the bench, and read the id at the end of the browser address bar.
+    odoo_workcenter_id: 12
 
     notes: "Bitrate capped at 4096 kbps in the VIGI app."
 

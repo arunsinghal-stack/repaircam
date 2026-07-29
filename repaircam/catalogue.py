@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
@@ -43,6 +43,16 @@ CREATE TABLE IF NOT EXISTS recordings (
     audio_codec   TEXT    DEFAULT '',
     notes         TEXT    DEFAULT '',
     link_posted   INTEGER DEFAULT 0,
+    -- Why a link will never be posted. Set when saar-seva says it has no such
+    -- session: retrying that forever achieves nothing and, worse, blocks every
+    -- clip queued behind it.
+    link_error    TEXT    DEFAULT '',
+    -- Which integration asked for this clip: '' (started by hand), 'repair'
+    -- or 'packing'. source_ref is that system's own id for the session.
+    -- Kept in the database, not just in memory, so a clip whose link has not
+    -- been posted yet still knows where to post it after a restart.
+    source        TEXT    DEFAULT '',
+    source_ref    TEXT    DEFAULT '',
     created_at    TEXT    NOT NULL
 );
 
@@ -50,6 +60,11 @@ CREATE INDEX IF NOT EXISTS idx_recordings_wc      ON recordings(work_center);
 CREATE INDEX IF NOT EXISTS idx_recordings_mo      ON recordings(mo_name);
 CREATE INDEX IF NOT EXISTS idx_recordings_imei    ON recordings(imei);
 CREATE INDEX IF NOT EXISTS idx_recordings_started ON recordings(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS events (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -113,6 +128,12 @@ class Recording:
     video_codec: str = ""
     audio_codec: str = ""
     link_posted: int = 0
+    #: Which integration asked for this clip ('', 'repair', 'packing') and that
+    #: system's own id for the session, so the link can be posted back to the
+    #: right place even after a restart.
+    source: str = ""
+    source_ref: str = ""
+    link_error: str = ""
     created_at: str = field(default_factory=utcnow)
     labels: JobLabels = field(default_factory=JobLabels)
 
@@ -164,6 +185,16 @@ class Catalogue:
     def _init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            # Additive migrations for databases made by an earlier version.
+            # SQLite has no ADD COLUMN IF NOT EXISTS, so ask first.
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info(recordings)")}
+            for column, ddl in (
+                ("source", "ALTER TABLE recordings ADD COLUMN source TEXT DEFAULT ''"),
+                ("source_ref", "ALTER TABLE recordings ADD COLUMN source_ref TEXT DEFAULT ''"),
+                ("link_error", "ALTER TABLE recordings ADD COLUMN link_error TEXT DEFAULT ''"),
+            ):
+                if column not in existing:
+                    conn.execute(ddl)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @staticmethod
@@ -185,6 +216,9 @@ class Catalogue:
             video_codec=row["video_codec"],
             audio_codec=row["audio_codec"],
             link_posted=row["link_posted"],
+            source=(row["source"] if "source" in row.keys() else "") or "",
+            source_ref=(row["source_ref"] if "source_ref" in row.keys() else "") or "",
+            link_error=(row["link_error"] if "link_error" in row.keys() else "") or "",
             created_at=row["created_at"],
             labels=JobLabels(
                 mo_name=row["mo_name"],
@@ -207,8 +241,9 @@ class Catalogue:
                     work_center, camera_name, mo_name, operation, device, imei,
                     technician, started_at, ended_at, duration_s, segments, path,
                     sidecar_path, size_bytes, width, height, frame_rate,
-                    video_codec, audio_codec, notes, link_posted, created_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    video_codec, audio_codec, notes, link_posted, source,
+                    source_ref, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     recording.work_center,
@@ -232,6 +267,8 @@ class Catalogue:
                     recording.audio_codec,
                     recording.labels.notes,
                     recording.link_posted,
+                    recording.source,
+                    recording.source_ref,
                     recording.created_at,
                 ),
             )
@@ -257,6 +294,18 @@ class Catalogue:
                     labels.notes,
                     recording_id,
                 ),
+            )
+
+    def set_source(self, recording_id: int, source: str, source_ref: str) -> None:
+        """Record which integration a clip came from, and its id there.
+
+        Written when the clip is filed rather than kept in memory, so a restart
+        before the link is posted does not lose where it should go.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET source=?, source_ref=? WHERE id=?",
+                (source, source_ref, recording_id),
             )
 
     def mark_link_posted(self, recording_id: int) -> None:
@@ -329,6 +378,71 @@ class Catalogue:
         with self.connect() as conn:
             rows = conn.execute(query, [*params, limit, offset]).fetchall()
         return [self._to_recording(row) for row in rows]
+
+    def list_unposted(self, limit: int = 10) -> list[Recording]:
+        """Clips whose link has not reached Odoo yet, and still could.
+
+        Only clips that came from an integration qualify — ``source`` and
+        ``source_ref`` both set. saar-seva matches a clip to a job by ITS OWN
+        session id, so a clip a technician started by hand in RepairCam has
+        nothing for it to match, however carefully the MO number was typed into
+        our form. Queueing those guaranteed a 404 on every poll, forever.
+
+        Clips that already failed permanently are excluded too, so one of them
+        cannot sit at the head of the queue and starve the rest.
+
+        Driving retries from here rather than from memory means a clip finished
+        just before a restart is still posted afterwards.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recordings WHERE link_posted = 0"
+                "   AND link_error = ''"
+                "   AND source != '' AND source_ref != ''"
+                " ORDER BY id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._to_recording(row) for row in rows]
+
+    def mark_link_failed(self, recording_id: int, reason: str) -> None:
+        """Stop retrying a clip saar-seva will never accept, and say why.
+
+        The clip and its footage are untouched — only the automatic link post
+        gives up. The status page surfaces these so they are not lost silently.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET link_error=? WHERE id=?", (reason[:300], recording_id)
+            )
+
+    def list_link_failures(self, limit: int = 50) -> list[Recording]:
+        """Clips whose link could not be posted and will not be retried."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM recordings WHERE link_error != '' AND link_posted = 0"
+                " ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._to_recording(row) for row in rows]
+
+    # -- small persistent settings -----------------------------------------
+    #
+    # Only for things that must survive a restart but are not worth a file of
+    # their own — today, the camera-list revision this box has applied, so a
+    # restart does not re-sync a config that has not changed.
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        with self.connect() as conn:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, str(value)),
+            )
 
     def count(self) -> int:
         with self.connect() as conn:

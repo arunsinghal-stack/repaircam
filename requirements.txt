@@ -1,4 +1,5 @@
-# RepairCam recorder dependencies.
+# RepairCam recorder dependencies.  Needs Python 3.8 or newer
+# (Ubuntu 20.04 ships 3.8, which is what the shop recorder runs).
 # Install with:  python3 -m pip install -r requirements.txt
 #
 # Everything else (recording, concat, snapshots) is done by the ffmpeg binary,

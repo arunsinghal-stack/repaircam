@@ -33,6 +33,20 @@ ffmpeg -version
 You should see a line starting `ffmpeg version`. If you see `command not found`,
 the install did not work — do not continue.
 
+Also check Python:
+
+```bash
+python3 --version
+```
+
+Anything from **3.8** upwards is fine. If the next step complains that
+`ensurepip is not available`, install the matching venv package it names — for
+example on Ubuntu 20.04 (Python 3.8):
+
+```bash
+sudo apt install -y python3.8-venv
+```
+
 ### 2. Get RepairCam
 
 ```bash
@@ -132,6 +146,90 @@ Everything between Start and Done becomes **one video** for that operation.
 
 ---
 
+## Make it start by itself (recommended)
+
+The command above only runs while that terminal window stays open. Once the focus
+test has passed and you want RepairCam running permanently, install it as a
+**service**: it then starts on its own when the machine boots and restarts itself if
+it ever crashes.
+
+From inside the `repaircam` folder:
+
+```bash
+./deploy/install-service.sh
+```
+
+It will ask for your password (installing a service needs administrator rights).
+Every line it prints should say `OK`. At the end it shows the address to open.
+
+> Run it as yourself, **not** with `sudo` in front. The script asks for
+> administrator rights only for the steps that need them, so that your recordings
+> stay owned by you.
+
+To use a different port or storage location:
+
+```bash
+./deploy/install-service.sh --port 9000
+./deploy/install-service.sh --data-dir /mnt/archive/repaircam-data
+```
+
+To see exactly what it would install without changing anything:
+
+```bash
+./deploy/install-service.sh --dry-run
+```
+
+### Managing the service afterwards
+
+| What you want | Command |
+|---|---|
+| Is it running? | `systemctl status repaircam` |
+| Watch what it is doing | `journalctl -u repaircam -f` (press `Ctrl+C` to stop watching) |
+| See today's messages | `journalctl -u repaircam --since today` |
+| Restart it | `sudo systemctl restart repaircam` |
+| Stop it until the next reboot | `sudo systemctl stop repaircam` |
+| Stop it permanently | `sudo systemctl disable --now repaircam` |
+
+After changing `cameras.yaml`, restart the service so it picks up the change:
+
+```bash
+sudo systemctl restart repaircam
+```
+
+> **One thing to know.** If the machine reboots or the service restarts *while a
+> technician is part-way through an operation*, that recording is not saved as a clip
+> automatically. Nothing is lost — see **Rescuing unsaved footage** below.
+
+---
+
+## Rescuing unsaved footage
+
+If the recorder restarts part-way through an operation, the video is still on disk but
+was never joined into a clip, so it does not appear in the Library. The **Status** page
+tells you when this has happened.
+
+To see whether there is any:
+
+```bash
+.venv/bin/python -m repaircam.cli recover
+```
+
+This only *looks* — it changes nothing. If it finds something, save it with:
+
+```bash
+.venv/bin/python -m repaircam.cli recover --all
+```
+
+Each rescued recording becomes a normal clip in the Library, **without a job label** —
+nobody ever told RepairCam what job it was for. Open it in the Library and fill in the
+job details so it stays useful.
+
+> If it says a recording *"may still be recording"*, that is the safety check doing its
+> job: joining a video while it is still being written would damage it. Wait a minute
+> and run it again. Only add `--force` if you are certain nothing is recording.
+
+---
+
 ## Everyday commands
 
 Run these from the `repaircam` folder.
@@ -145,6 +243,8 @@ Run these from the `repaircam` folder.
 | What has been recorded | `.venv/bin/python -m repaircam.cli list` |
 | Details of one clip | `.venv/bin/python -m repaircam.cli info 12` |
 | Add a job label afterwards | `.venv/bin/python -m repaircam.cli relabel 12 --mo WH/MO/42` |
+| Check for unsaved footage | `.venv/bin/python -m repaircam.cli recover` |
+| Save unsaved footage | `.venv/bin/python -m repaircam.cli recover --all` |
 | Start the web app | `.venv/bin/python -m repaircam.cli web` |
 
 ---

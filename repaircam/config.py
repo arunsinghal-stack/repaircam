@@ -84,6 +84,12 @@ class CameraConfig:
     model: str = ""
     has_audio: bool = True
     notes: str = ""
+    # Which Odoo work centre this bench is, for the saar-seva auto-trigger
+    # (Phase 5). saar-seva identifies benches by Odoo's numeric id, not by a
+    # code like "WC2", so the mapping has to be stated explicitly here.
+    # Matching on the work-centre *name* instead would break silently the day
+    # somebody renames it in Odoo.
+    odoo_workcenter_id: int | None = None
     extra: dict = field(default_factory=dict)
 
     # -- URLs ---------------------------------------------------------------
@@ -126,6 +132,7 @@ class CameraConfig:
             "model": self.model,
             "backend": self.backend,
             "url": self.safe_main_url,
+            "odoo_workcenter_id": self.odoo_workcenter_id,
         }
 
 
@@ -180,6 +187,7 @@ def load_cameras(path: Path | None = None) -> dict[str, CameraConfig]:
             "model",
             "has_audio",
             "notes",
+            "odoo_workcenter_id",
         }
         cameras[str(work_center)] = CameraConfig(
             work_center=str(work_center),
@@ -194,6 +202,11 @@ def load_cameras(path: Path | None = None) -> dict[str, CameraConfig]:
             model=str(values.get("model", "")),
             has_audio=bool(values.get("has_audio", True)),
             notes=str(values.get("notes", "")),
+            odoo_workcenter_id=(
+                int(values["odoo_workcenter_id"])
+                if str(values.get("odoo_workcenter_id", "")).strip().isdigit()
+                else None
+            ),
             extra={k: v for k, v in values.items() if k not in known},
         )
     return cameras

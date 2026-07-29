@@ -20,7 +20,7 @@ from flask import (
     url_for,
 )
 
-from .. import __version__, config, ffmpeg
+from .. import __version__, config, ffmpeg, recovery, saarseva
 from ..backends import CaptureError, build_backend
 from ..catalogue import Catalogue, JobLabels, read_sidecar
 from ..config import ConfigError
@@ -65,7 +65,12 @@ def clip_path(recording) -> Path:
     """
     root = config.data_dir()
     path = (root / recording.path).resolve()
-    if not path.is_relative_to(root):
+    try:
+        # Path.is_relative_to() would read better but is Python 3.9+, and the
+        # shop recorder runs 3.8. relative_to() raising ValueError is the same
+        # test and works everywhere.
+        path.relative_to(root)
+    except ValueError:
         abort(400, "recording path is outside the data directory")
     if not path.exists():
         abort(404, "the video file for this recording is missing from disk")
@@ -218,7 +223,9 @@ def bench_snapshot(work_center: str):
     camera = config.get_camera(work_center)
     dest = config.ensure_data_dirs()["snapshots"] / f"{work_center}_latest.jpg"
     try:
-        build_backend(camera).snapshot(dest)
+        # Sub-stream: this is a thumbnail, and it must not steal bandwidth
+        # from a recording in progress. The focus test uses the main stream.
+        build_backend(camera).snapshot(dest, stream="sub")
     except (CaptureError, ffmpeg.FFmpegError) as exc:
         abort(503, f"could not reach the camera: {exc}")
     return send_file(dest, mimetype="image/jpeg", max_age=0)
@@ -328,11 +335,26 @@ def status():
     checks = []
     if request.args.get("cameras") == "1":
         for work_center, camera in sorted(config.load_cameras().items()):
-            ok, message = build_backend(camera).check()
+            ok, message = build_backend(camera).check(
+                timeout=request.args.get("timeout", type=float)
+            )
             checks.append({"work_center": work_center, "camera": camera, "ok": ok, "message": message})
+
+    # Footage left behind by a restart is invisible everywhere else — it is not
+    # in the library, because it never became a clip. Say so here.
+    orphans = recovery.find_orphans()
+
+    trigger = current_app.extensions.get("trigger")
 
     return render_template(
         "status.html",
+        trigger=trigger.status() if trigger else None,
+        trigger_configured=saarseva.is_configured(),
+        orphans=orphans,
+        orphan_mb=round(sum(o.size_mb for o in orphans), 1),
+        # Clips whose link saar-seva refused for good. Nothing retries these,
+        # so this page is the only place they surface.
+        link_failures=catalogue().list_link_failures(),
         ffmpeg_version=ffmpeg.version(),
         ffmpeg_ok=ffmpeg.available(),
         data_dir=root,

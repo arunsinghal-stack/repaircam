@@ -6,6 +6,7 @@ USB webcams later, and the recorder above never notices the difference.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +49,14 @@ class Segment:
 class ActiveCapture(ABC):
     """A capture in flight. Returned by :meth:`CaptureBackend.start`."""
 
+    #: The file being written, when the backend writes to one. Subclasses set
+    #: it (or override it with a property). It is what makes ``capturing``
+    #: below work without the recorder knowing anything about ffmpeg.
+    dest: Path | None = None
+
+    #: Latched when the first byte appears. Never cleared.
+    _capture_began_at: float | None = None
+
     @property
     @abstractmethod
     def running(self) -> bool:
@@ -57,6 +66,46 @@ class ActiveCapture(ABC):
     @abstractmethod
     def elapsed(self) -> float:
         """Seconds since the capture started."""
+
+    @property
+    def capturing(self) -> bool:
+        """Are frames actually landing on disk yet?
+
+        ``running`` only says the capture process exists. For RTSP there are
+        seconds between that and the first frame: ffmpeg still has to resolve
+        the host, open the stream, authenticate and wait for a keyframe — and
+        if the camera is unplugged or the password is wrong it sits in exactly
+        that gap and then dies. Showing a technician a red "recording" light
+        during the gap tells them they are filmed when they may not be, which
+        is the one thing an accountability system must never do.
+
+        The signal is the destination file gaining its first byte, which works
+        for any backend that writes a file. Once true it stays true — a stat
+        that fails later must not make a live recording look dead.
+        """
+        if self._capture_began_at is not None:
+            return True
+        if self.dest is None:
+            return self.running  # backend cannot tell us; take its word
+        try:
+            if self.dest.stat().st_size > 0:
+                self._capture_began_at = time.time()
+                return True
+        except OSError:
+            pass
+        return False
+
+    @property
+    def capture_started_at(self) -> float | None:
+        """When the first byte landed, or None while still connecting."""
+        self.capturing  # refreshes the latch
+        return self._capture_began_at
+
+    @property
+    def capturing_elapsed(self) -> float:
+        """Seconds of *actual* footage — zero until frames start."""
+        began = self.capture_started_at
+        return 0.0 if began is None else max(0.0, time.time() - began)
 
     @abstractmethod
     def stop(self, timeout: float = 10) -> Segment:
@@ -85,15 +134,23 @@ class CaptureBackend(ABC):
         """Begin writing a clip to ``dest``."""
 
     @abstractmethod
-    def snapshot(self, dest: Path) -> Path:
-        """Write a single still image to ``dest``."""
+    def snapshot(self, dest: Path, *, stream: str = "main") -> Path:
+        """Write a single still image to ``dest``.
+
+        ``stream`` is ``"main"`` or ``"sub"``. The focus test needs the MAIN
+        stream: focus is a lens property both streams share, but the sub-stream
+        is too low-resolution to judge "can I read the screws" on, so a sharp
+        camera fails the test on detail it never had the pixels to show. The
+        live preview and bench thumbnail use ``"sub"``, which costs the camera
+        almost nothing while a recording is running.
+        """
 
     @abstractmethod
     def preview_frames(self, *, fps: int = 6, width: int = 640):
         """Yield JPEG frames as bytes, for the browser live preview."""
 
     @abstractmethod
-    def check(self) -> tuple[bool, str]:
+    def check(self, *, timeout: float | None = None) -> tuple[bool, str]:
         """Is the camera reachable right now? Returns (ok, human message)."""
 
     def concat(self, segments: list[Segment], dest: Path) -> Path:

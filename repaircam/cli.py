@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, ffmpeg
+from . import __version__, config, ffmpeg, recovery, saarseva
 from .backends import CaptureError, build_backend
 from .catalogue import Catalogue, JobLabels
 from .config import ConfigError
@@ -64,6 +64,9 @@ def _add_label_arguments(parser: argparse.ArgumentParser) -> None:
 
 def cmd_cameras(args: argparse.Namespace) -> int:
     """List configured benches, and optionally test each camera."""
+    if args.sync and _sync_cameras_now() != 0:
+        return 1
+
     cameras = config.load_cameras()
     print(f"{len(cameras)} bench(es) configured in {config.cameras_file()}\n")
     for work_center, camera in sorted(cameras.items()):
@@ -71,10 +74,62 @@ def cmd_cameras(args: argparse.Namespace) -> int:
         print(f"         {camera.model or 'camera'} at {camera.host} via {camera.backend}")
         print(f"         record: {camera.safe_main_url}")
         print(f"         preview: {camera.safe_sub_url}")
+        # Printed even when unset: without it the bench is simply never
+        # auto-triggered, and a silent opt-out is exactly the sort of thing
+        # someone spends an afternoon not finding.
+        if camera.odoo_workcenter_id:
+            print(f"         odoo work centre: {camera.odoo_workcenter_id} (auto-trigger ready)")
+        else:
+            print("         odoo work centre: NOT SET — this bench will never auto-record")
         if args.check:
-            ok, message = build_backend(camera).check()
+            ok, message = build_backend(camera).check(timeout=args.timeout)
             print(f"         {OK if ok else BAD} {message}")
         print()
+    return 0
+
+
+def _sync_cameras_now() -> int:
+    """Pull the central camera list and write cameras.yaml. For `cameras --sync`.
+
+    The trigger does this by itself when the revision changes; this exists for
+    when somebody is standing at the box and wants to watch it work, or when
+    the trigger is not running at all.
+    """
+    from . import camerasync
+    from .recorder import RecorderPool
+
+    try:
+        saar_config = saarseva.load_config()
+    except ConfigError as exc:
+        print(f"{BAD} {exc}", file=sys.stderr)
+        return 1
+
+    client = saarseva.SaarSevaClient(saar_config)
+    try:
+        payload = client.fetch_camera_config()
+    except saarseva.SaarSevaError as exc:
+        print(f"{BAD} could not fetch the camera list: {exc}", file=sys.stderr)
+        return 1
+
+    # A bench mid-clip is left exactly as it is; rewriting the file under a
+    # running ffmpeg helps nobody.
+    busy: set[str] = set()
+    try:
+        pool = RecorderPool(Catalogue())
+        busy = {wc for wc, s in pool.statuses().items() if s.get("busy")}
+    except Exception:  # no cameras yet, first ever sync
+        pass
+
+    try:
+        result = camerasync.apply(payload, busy=busy)
+    except camerasync.CameraSyncError as exc:
+        print(f"{BAD} refused: {exc}", file=sys.stderr)
+        print("     cameras.yaml is unchanged.", file=sys.stderr)
+        return 1
+
+    print(f"{OK} {result.summary()}")
+    if result.deferred:
+        print("     Those benches are recording; run this again when they finish.")
     return 0
 
 
@@ -110,6 +165,11 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
     Point the camera at a real phone at 60–80 cm, take a snapshot, open it, and
     check that the screen and screws are sharp.
+
+    It samples the MAIN stream, the one that gets recorded. The sub-stream is
+    far lower resolution, so a perfectly focused camera can look like it cannot
+    resolve a screw simply because that image never had the pixels — judging
+    focus on it would fail a camera that is fine.
     """
     camera = config.get_camera(args.work_center)
     backend = build_backend(camera)
@@ -118,11 +178,28 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         dest = config.ensure_data_dirs()["snapshots"] / f"{args.work_center}_{stamp}.jpg"
 
-    backend.snapshot(dest)
+    stream = "sub" if args.sub else "main"
+    backend.snapshot(dest, stream=stream)
     size_kb = round(dest.stat().st_size / 1024)
-    print(f"{OK} snapshot saved: {dest}  ({size_kb} KB)")
-    print("     Open it and check a phone at 60-80 cm is sharp (screws readable).")
+    print(f"{OK} snapshot saved: {dest}  ({size_kb} KB, {stream} stream{_dimensions(dest)})")
+    if stream == "sub":
+        print("     NOTE: sub-stream — too low-resolution to judge focus on.")
+        print("     Drop --sub for the real focus test.")
+    else:
+        print("     Open it and check a phone at 60-80 cm is sharp (screws readable).")
     return 0
+
+
+def _dimensions(path: Path) -> str:
+    """``, 2560x1440`` if ffprobe can say, else nothing. Never fatal."""
+    try:
+        streams = ffmpeg.probe(str(path)).get("streams") or []
+    except Exception:
+        return ""
+    for s in streams:
+        if s.get("width") and s.get("height"):
+            return f", {s['width']}x{s['height']}"
+    return ""
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -176,6 +253,107 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    """File footage that was recorded but never saved as a clip.
+
+    This happens when the recorder restarts part-way through an operation: the
+    segments survive on disk, but nothing joined them, so they never reached the
+    library. Safe by default — it lists what it found and only acts on --all.
+    """
+    orphans = recovery.find_orphans()
+    if not orphans:
+        print(f"{OK} Nothing to recover — no unsaved footage on this machine.")
+        return 0
+
+    print(f"Found {len(orphans)} unsaved recording(s):\n")
+    print(f"  {'WHICH':<26} {'WHEN':<20} {'PIECES':>6} {'SIZE':>8}")
+    for orphan in orphans:
+        active = "  (still recording?)" if orphan.looks_active(args.grace) else ""
+        when = orphan.started_iso.replace("T", " ")[:19]
+        print(
+            f"  {orphan.label:<26} {when:<20} {len(orphan.segments):>6} "
+            f"{orphan.size_mb:>7.1f}M{active}"
+        )
+
+    if not args.all:
+        print("\nNothing has been changed. To save these as clips, run:")
+        print("    python3 -m repaircam.cli recover --all")
+        print("\nThey will be saved without a job label — tag them afterwards in the Library.")
+        return 0
+
+    print()
+    recovered, failed = recovery.recover_all(grace_seconds=args.grace, force=args.force)
+
+    for recording in recovered:
+        print(f"  {OK} saved {recording.duration_hms:>8}  {recording.path}")
+    for orphan, reason in failed:
+        print(f"  {BAD} {orphan.label}: {reason}")
+
+    print(f"\n{len(recovered)} saved, {len(failed)} left alone.")
+    if recovered:
+        print("These clips have no job label yet. Tag them in the Library so they stay useful.")
+    return 1 if failed and not recovered else 0
+
+
+def cmd_trigger(args: argparse.Namespace) -> int:
+    """Test or run the automatic trigger that starts recording from saar-seva.
+
+    Nothing is switched on until repaircam/saarseva.yaml exists, and saar-seva's
+    saar-seva also needs REPAIRCAM_API_KEY set — see docs/PHASE5-CONTRACT.md.
+    """
+    from .recorder import RecorderPool
+    from .trigger import Trigger
+
+    if not saarseva.is_configured():
+        print("The automatic trigger is OFF — technicians start recordings by hand.")
+        print("\nTo switch it on:")
+        print(f"    cp {saarseva.config_file().parent / 'saarseva.example.yaml'} "
+              f"{saarseva.config_file()}")
+        print(f"\nWhen you fill it in, this recorder's address is probably:")
+        print(f"    link_base: \"{saarseva.default_link_base()}\"")
+        print("\nNote: saar-seva also needs REPAIRCAM_API_KEY set, or it will answer 503.")
+        return 0
+
+    config = saarseva.load_config()
+    client = saarseva.SaarSevaClient(config)
+
+    print("Automatic trigger settings:")
+    for key, value in config.describe().items():
+        print(f"    {key:<14} {value}")
+
+    print("\nAsking saar-seva what is running...")
+    ok, message = client.check()
+    print(f"    {OK if ok else BAD} {message}")
+    if not ok:
+        return 1
+
+    for operation in client.fetch_active():
+        print(f"      {operation.work_center:<6} {operation.mo_name or '(no MO)':<16} "
+              f"{operation.operation or '(no operation)'}")
+
+    if not (args.once or args.run):
+        print("\nNothing was changed. To act on this once:")
+        print("    python3 -m repaircam.cli trigger --once")
+        return 0
+
+    trigger = Trigger(RecorderPool(Catalogue()), client, config=config)
+    if args.once:
+        print("\nRunning one cycle...")
+        print(f"    {trigger.tick().summary()}")
+        return 0
+
+    print(f"\nPolling every {config.poll_seconds}s. Press Ctrl-C to stop.")
+    try:
+        while True:
+            result = trigger.tick()
+            if result.changed or not result.ok:
+                print(f"    {result.summary()}")
+            time.sleep(config.poll_seconds)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Is this box healthy enough to record? Checks tools, disk and cameras."""
     print("RepairCam status\n")
@@ -211,7 +389,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         if args.quick:
             print(f"    {work_center:<6} {camera.name} at {camera.host}")
             continue
-        ok, message = build_backend(camera).check()
+        ok, message = build_backend(camera).check(timeout=args.timeout)
         failures += 0 if ok else 1
         print(f"    {OK if ok else BAD} {work_center:<6} {camera.name:<28} {message}")
 
@@ -278,6 +456,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("cameras", help="list configured benches")
     p.add_argument("--check", action="store_true", help="also test each camera is reachable")
+    p.add_argument(
+        "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
+        help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
+    p.add_argument(
+        "--sync", action="store_true",
+        help="fetch the central camera list from saar-seva and apply it now",
+    )
     p.set_defaults(func=cmd_cameras)
 
     p = sub.add_parser("record", help="record a clip from one bench")
@@ -289,6 +475,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("snapshot", help="grab one still image (the focus test)")
     p.add_argument("work_center")
     p.add_argument("-o", "--output", help="where to write the JPEG")
+    p.add_argument(
+        "--sub", action="store_true",
+        help="use the low-resolution sub-stream (cheap, but no good for judging focus)",
+    )
     p.set_defaults(func=cmd_snapshot)
 
     p = sub.add_parser("list", help="list recorded clips")
@@ -308,8 +498,28 @@ def build_parser() -> argparse.ArgumentParser:
     _add_label_arguments(p)
     p.set_defaults(func=cmd_relabel)
 
+    p = sub.add_parser("recover", help="save footage left behind by a restart")
+    p.add_argument("--all", action="store_true", help="actually save them (default: just list)")
+    p.add_argument(
+        "--grace",
+        type=float,
+        default=recovery.DEFAULT_GRACE_SECONDS,
+        help="seconds of inactivity before a folder counts as finished (default: %(default)s)",
+    )
+    p.add_argument("--force", action="store_true", help="recover even if it may still be recording")
+    p.set_defaults(func=cmd_recover)
+
+    p = sub.add_parser("trigger", help="the saar-seva automatic start/stop (Phase 5)")
+    p.add_argument("--once", action="store_true", help="run a single cycle and stop")
+    p.add_argument("--run", action="store_true", help="keep polling until Ctrl-C")
+    p.set_defaults(func=cmd_trigger)
+
     p = sub.add_parser("status", help="health check: ffmpeg, disk, cameras")
     p.add_argument("--quick", action="store_true", help="skip the camera network tests")
+    p.add_argument(
+        "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
+        help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("web", help="start the web UI")
@@ -326,7 +536,14 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     try:
         return args.func(args)
-    except (ConfigError, RecorderError, CaptureError, ffmpeg.FFmpegError) as exc:
+    except (
+        ConfigError,
+        RecorderError,
+        CaptureError,
+        recovery.RecoveryError,
+        saarseva.SaarSevaError,
+        ffmpeg.FFmpegError,
+    ) as exc:
         # These are the expected, explainable failures — show the message, not a
         # traceback, because the person reading it is not a programmer.
         print(f"\n{BAD} {exc}", file=sys.stderr)

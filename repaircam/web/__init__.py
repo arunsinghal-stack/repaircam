@@ -54,7 +54,46 @@ def create_app(**overrides) -> Flask:
     app.extensions["catalogue"] = Catalogue()
     app.extensions["recorders"] = RecorderPool(app.extensions["catalogue"])
 
+    app.extensions["trigger"] = _maybe_start_trigger(app)
+
     from .routes import bp
 
     app.register_blueprint(bp)
     return app
+
+
+def _maybe_start_trigger(app: Flask):
+    """Start the saar-seva auto-trigger, if it has been set up.
+
+    Off unless repaircam/saarseva.yaml exists, which is the normal state today:
+    saar-seva has the endpoints but REPAIRCAM_API_KEY is not set on it yet, so
+    technicians start recordings themselves. A broken trigger must never prevent
+    the web UI from starting — recording by hand has to keep working no matter
+    what the cloud is doing.
+    """
+    from .. import saarseva
+
+    if not saarseva.is_configured():
+        log.info("saar-seva auto-trigger: not configured, technicians start recordings by hand")
+        return None
+
+    try:
+        config = saarseva.load_config()
+        if not config.enabled:
+            log.info("saar-seva auto-trigger: disabled in saarseva.yaml")
+            return None
+
+        from ..trigger import Trigger
+
+        trigger = Trigger(
+            app.extensions["recorders"],
+            saarseva.SaarSevaClient(config),
+            catalogue=app.extensions["catalogue"],
+            config=config,
+        )
+        trigger.start()
+        log.info("saar-seva auto-trigger: polling %s every %ss", config.base_url, config.poll_seconds)
+        return trigger
+    except Exception as exc:
+        log.error("saar-seva auto-trigger could not start (recording is unaffected): %s", exc)
+        return None

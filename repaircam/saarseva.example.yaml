@@ -1,0 +1,47 @@
+# saar-seva auto-trigger — copy this file to saarseva.yaml to switch it on.
+#
+#     cp repaircam/saarseva.example.yaml repaircam/saarseva.yaml
+#
+# saarseva.yaml holds a real API token and is gitignored. NEVER commit it.
+#
+# While this file does not exist, the auto-trigger is simply OFF and technicians
+# start and stop recordings themselves in the web UI. Everything still works.
+#
+# Before this works, two things must also be true:
+#   1. saar-seva has REPAIRCAM_API_KEY set (same token as below), otherwise its
+#      endpoints answer 503 to everyone. The endpoints themselves are merged to
+#      saar-seva's staging branch; check they are deployed to the URL below.
+#   2. each bench in cameras.yaml has an odoo_workcenter_id.
+# See docs/PHASE5-CONTRACT.md.
+
+saarseva:
+  # Where saar-seva's backend lives.
+  base_url: "https://saar-seva-api-staging.onrender.com"
+
+  # Service token for the recorder — NOT a technician's login.
+  api_key: "CHANGE-ME"
+
+  # This recorder's address on the shop network. It goes into the Odoo MO
+  # chatter as the link to the video, so it must be reachable from a shop
+  # computer. Find it with:  hostname -I
+  link_base: "http://192.168.0.50:8080"
+
+  # How often to ask saar-seva what is running. 5s is responsive without being
+  # rude to a sleeping Render instance.
+  poll_seconds: 5
+
+  # Which benches may auto-record, by bench code.
+  #
+  # LEAVE THIS EMPTY unless you have a reason not to. Empty means "every bench
+  # in cameras.yaml that has an odoo_workcenter_id", which is what you want once
+  # the camera list is maintained in saar-seva's admin panel: adding a bench
+  # there is then genuinely all it takes.
+  #
+  # Naming benches here turns it into an allow-list, and a bench added centrally
+  # but missing from it is fully configured, looks correct everywhere, and still
+  # never records. The status page calls that out, but the simplest fix is to
+  # leave this empty.
+  work_centers: []
+
+  # Set to false to keep the settings but stop polling.
+  enabled: true

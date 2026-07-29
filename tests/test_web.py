@@ -162,3 +162,64 @@ def test_status_page_renders(client):
     response = client.get("/status")
     assert response.status_code == 200
     assert b"Data directory" in response.data
+
+
+def test_status_page_surfaces_unsaved_footage(client, data_root: Path):
+    """Orphaned segments are in no other page — the status page is where the
+    owner finds out footage exists but never became a clip."""
+    directory = data_root / "segments" / "WC2" / "20260727-101500"
+    directory.mkdir(parents=True)
+    (directory / "seg-001.mp4").write_bytes(b"video")
+
+    page = client.get("/status").data
+    assert b"Unsaved footage" in page
+    assert b"recover --all" in page
+
+
+def test_status_page_stays_quiet_when_nothing_is_orphaned(client):
+    assert b"Unsaved footage" not in client.get("/status").data
+
+
+def test_status_says_the_trigger_is_off_when_unconfigured(client, monkeypatch, tmp_path: Path):
+    """The normal state today — it must read as fine, not broken."""
+    monkeypatch.setenv("REPAIRCAM_SAARSEVA", str(tmp_path / "nope.yaml"))
+    page = client.get("/status").data
+    assert b"Automatic start/stop" in page
+    assert b"technicians start and stop recordings themselves" in page
+
+
+def test_bench_thumbnail_stays_on_the_cheap_stream(client, camera, monkeypatch):
+    """The page thumbnail must not steal bandwidth from a live recording.
+
+    The focus test is the opposite case and uses the main stream — see
+    tests/test_snapshot_stream.py.
+    """
+    stub = StubBackend(camera)
+    monkeypatch.setattr("repaircam.web.routes.build_backend", lambda _c: stub)
+
+    assert client.get("/bench/WC2/snapshot.jpg").status_code == 200
+    assert stub.snapshots == ["sub"]
+
+
+def test_status_page_shows_links_that_never_reached_odoo(client, app):
+    """Nothing retries these, so if the page does not show them, nobody ever
+    learns a video is missing from its job."""
+    from repaircam.catalogue import JobLabels, Recording, utcnow
+
+    cat = app.extensions["catalogue"]
+    clip = cat.add(
+        Recording(
+            work_center="WC2",
+            path="recordings/a.mp4",
+            started_at=utcnow(),
+            labels=JobLabels(mo_name="WH/MO/42"),
+            source="repair",
+            source_ref="gone",
+        )
+    )
+    cat.mark_link_failed(clip.id, "POST /trc/recordings failed: HTTP 404")
+
+    page = client.get("/status").data
+    assert b"Links that never reached Odoo" in page
+    assert b"WH/MO/42" in page
+    assert b"HTTP 404" in page

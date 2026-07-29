@@ -82,6 +82,7 @@ footer { text-align: center; color: var(--muted); font-size: .8rem; padding: 24p
 }
 .bench-card:hover { text-decoration: none; background: var(--panel-2); }
 .bench-card.state-recording { border-left-color: var(--rec); }
+.bench-card.state-recording.connecting { border-left-color: var(--warn); }
 .bench-card.state-paused { border-left-color: var(--warn); }
 .bench-card.state-finalising { border-left-color: var(--link); }
 .bench-card.state-error { border-left-color: var(--rec); }
@@ -111,6 +112,9 @@ footer { text-align: center; color: var(--muted); font-size: .8rem; padding: 24p
 .timer-inline { font-variant-numeric: tabular-nums; }
 .rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .rec-dot.state-recording { background: var(--rec); animation: pulse 1.4s infinite; }
+/* Start pressed, no frames on disk yet: amber and STILL. The red blink means
+   footage is being written, and must never appear before it is. */
+.rec-dot.state-recording.connecting { background: var(--warn); animation: none; }
 .rec-dot.state-paused { background: var(--warn); }
 @keyframes pulse { 50% { opacity: .25; } }
 

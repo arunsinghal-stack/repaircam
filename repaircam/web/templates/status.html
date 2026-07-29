@@ -27,6 +27,134 @@
   <dd>{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB</dd>
 </dl>
 
+<h2 class="section">Automatic start/stop (saar-seva)</h2>
+{% if trigger %}
+  <dl class="facts">
+    <dt>Status</dt>
+    <dd>{% if trigger.running %}<span class="ok-text">running</span>{% else %}<span class="warn-text">stopped</span>{% endif %}
+        &mdash; polling {{ trigger.base_url }} every {{ trigger.poll_seconds }}s</dd>
+    <dt>Last check</dt>
+    <dd class="{{ 'warn-text' if trigger.ok is false else '' }}">
+      {{ trigger.summary }}
+      {%- if trigger.seconds_since_tick is not none %} ({{ trigger.seconds_since_tick }}s ago){% endif %}</dd>
+    {% if trigger.vetoed_benches %}
+    <dt>Not auto-recording</dt>
+    <dd class="warn-text">
+      {{ trigger.vetoed_benches|join(', ') }}
+      {{ 'has' if trigger.vetoed_benches|length == 1 else 'have' }} a camera and an Odoo
+      work centre, but {{ 'is' if trigger.vetoed_benches|length == 1 else 'are' }} not
+      listed in <code>work_centers</code> in saarseva.yaml, so
+      {{ 'it' if trigger.vetoed_benches|length == 1 else 'they' }} will never record by
+      themselves.
+      <div class="muted small">Empty that list to allow every configured bench.</div>
+    </dd>
+    {% endif %}
+
+    <dt>Recording light</dt>
+    <dd>
+      {% if trigger.heartbeat_error %}
+        <span class="warn-text">not reaching saar-seva &mdash; {{ trigger.heartbeat_error }}</span>
+      {% elif trigger.heartbeat_seconds_ago is none %}
+        <span class="muted">not reported yet</span>
+      {% else %}
+        reported {{ trigger.heartbeat_seconds_ago }}s ago
+      {% endif %}
+      <div class="muted small">What the technician screen shows about each bench's camera.</div>
+    </dd>
+
+    <dt>Camera list</dt>
+    <dd>
+      {% if trigger.config_sync_error %}
+        <span class="warn-text">not applied &mdash; {{ trigger.config_sync_error }}</span>
+      {% elif trigger.config_revision_applied is none %}
+        <span class="muted">central list not in use</span>
+      {% else %}
+        revision {{ trigger.config_revision_applied }}
+        {%- if trigger.config_revision_seen is not none
+               and trigger.config_revision_seen != trigger.config_revision_applied %}
+          <span class="warn-text">&mdash; revision {{ trigger.config_revision_seen }} is waiting</span>
+        {%- endif %}
+        {%- if trigger.config_sync_summary %}
+          <div class="muted small">{{ trigger.config_sync_summary }}</div>
+        {%- endif %}
+      {% endif %}
+      {% if trigger.config_sync_waiting %}
+        <div class="warn-text small">
+          Waiting for {{ trigger.config_sync_waiting|join(', ') }} to finish recording
+          before changing {{ 'it' if trigger.config_sync_waiting|length == 1 else 'them' }}.
+        </div>
+      {% endif %}
+    </dd>
+    {% if trigger.owned %}
+    <dt>Auto-recording</dt>
+    <dd>{% for wc, key in trigger.owned.items() %}<b>{{ wc }}</b> {{ key }}{% if not loop.last %}, {% endif %}{% endfor %}</dd>
+    {% endif %}
+  </dl>
+{% elif trigger_configured %}
+  <p class="warn-text">Configured, but not running. Check the recorder's log:
+     <code>journalctl -u repaircam -n 50</code></p>
+{% else %}
+  <p class="muted">Off &mdash; technicians start and stop recordings themselves.
+     This is normal until the recorder is given its saar-seva settings.</p>
+{% endif %}
+
+{% if link_failures %}
+<h2 class="section">Links that never reached Odoo</h2>
+<div class="flash flash-error">
+  <p><b>{{ link_failures|length }} clip{{ '' if link_failures|length == 1 else 's' }}
+     could not be linked into Odoo, and {{ 'it is' if link_failures|length == 1 else 'they are' }}
+     no longer being retried.</b></p>
+  <p class="small">
+    saar-seva did not recognise the job session {{ 'this clip' if link_failures|length == 1
+    else 'these clips' }} came from, so retrying could never succeed. The footage itself is
+    safe and is in the Library &mdash; only the automatic link into the Odoo chatter failed.
+    Paste the clip's address into the job by hand, or ask for it to be looked at.
+  </p>
+</div>
+<table class="table">
+  <thead><tr><th>Clip</th><th>Bench</th><th>Job</th><th>Why</th></tr></thead>
+  <tbody>
+    {% for clip in link_failures %}
+    <tr>
+      <td><a href="{{ url_for('repaircam.clip', recording_id=clip.id) }}">#{{ clip.id }}</a></td>
+      <td><b>{{ clip.work_center }}</b></td>
+      <td class="muted">{{ clip.labels.mo_name or 'unlabelled' }}</td>
+      <td class="muted small">{{ clip.link_error }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if orphans %}
+<h2 class="section">Unsaved footage</h2>
+<div class="flash flash-error">
+  <p><b>{{ orphans|length }} recording{{ '' if orphans|length == 1 else 's' }}
+     ({{ orphan_mb }} MB) {{ 'was' if orphans|length == 1 else 'were' }} never saved as
+     {{ 'a clip' if orphans|length == 1 else 'clips' }}.</b></p>
+  <p class="small">
+    This happens when the recorder restarts while someone is part-way through an operation.
+    The video is safe on disk, but it is not in the Library. To save it, run this on the
+    recorder box:
+  </p>
+  <p><code>python3 -m repaircam.cli recover --all</code></p>
+</div>
+<table class="table">
+  <thead><tr><th>Bench</th><th>Started</th><th>Pieces</th><th>Size</th></tr></thead>
+  <tbody>
+    {% for orphan in orphans %}
+    <tr>
+      <td><b>{{ orphan.work_center }}</b></td>
+      <td class="muted">{{ orphan.started_iso.replace('T', ' ')[:19] }}
+        {%- if orphan.started_estimated %} <span class="pill warn">approx</span>{% endif %}</td>
+      <td class="muted">{{ orphan.segments|length }}</td>
+      <td class="muted">{{ orphan.size_mb }} MB</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
 <h2 class="section">Cameras</h2>
 {% if not checked %}
   <p class="muted">Testing every camera takes a few seconds.</p>
