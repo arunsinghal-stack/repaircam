@@ -85,6 +85,35 @@ but it is a deliberate one, not a default.
 
 ---
 
+## What already exists (checked 2026-07-29)
+
+Less has to be built than this plan first assumed:
+
+- **`SystemSetting`** is a key/value store whose `value` is `Text`, already used to
+  hold a JSON blob (`trc_config`), with `get_config` / `save_config` helpers in
+  `backend/app/trc_config.py`. The camera list needs no migration and no new table.
+- **`GET /admin/trc-workcenters`** already returns `odoo.list_workcenters()` for the
+  admin panel, so the work-centre dropdown needs no new endpoint.
+- **The admin page and its gate exist** — Admin → TRC settings → "Technicians & work
+  centres", behind `trc.manage`. The camera table goes beside it, under the same gate.
+- **Adding `config_revision` to `/trc/active` is backward compatible.** RepairCam's
+  `parse_active()` reads `payload["active"]` and ignores every other key, so an
+  older recorder keeps working against a newer saar-seva.
+
+## What can never be central, and why
+
+`base_url` and `api_key` must stay in `saarseva.yaml` on the recorder **permanently**.
+The recorder needs the key to talk to saar-seva at all, so a key fetched *from*
+saar-seva is circular — there would be no way to make the first call. Same for the
+address of the server holding the config.
+
+`link_base` stays local too, but for a different reason: it is a property of the
+*recorder* (its own LAN URL — `http://192.168.1.163:8080` today), not of a bench.
+Ten benches share one link_base; a central per-bench table is the wrong shape for it.
+
+So "central config" means **the camera list, and only the camera list**. Three lines
+of `saarseva.yaml` are edited once per recorder and never again.
+
 ## Part A — saar-seva
 
 ### A1. The stored list
@@ -213,9 +242,24 @@ service change what the recorder points at:
 
 ## Sequencing
 
-This is a convenience feature. It saves SSH trips when there are several
-benches; it unblocks nothing. Today there is **one camera, which has not yet
-recorded a frame**.
+This is a convenience feature. It saves SSH trips when there are several benches;
+it unblocks nothing.
 
-Worth building when bench 2 and 3 arrive. Before that, the focus test and a real
-recording matter more.
+The two things this plan said should come first — the focus test, and a real
+recording — are both **done** (2026-07-29), and Phase 5 is live. But there is still
+**one camera**, and with one camera a central list saves exactly one SSH trip.
+
+What the live run did change is the *argument* for it. Switching Phase 5 on meant
+hand-adding `odoo_workcenter_id: 2` to `cameras.yaml`, and a bench whose id is
+missing or mistyped is never auto-triggered — silently. That is a ten-times-over
+risk at ten benches, and it is the same failure shape as the three defects the first
+live run turned up: the system was wrong and said nothing. (It now at least prints
+`NOT SET — this bench will never auto-record`.)
+
+Still not the next thing to build. **Nothing deletes or moves old clips**: 204 GB
+free is ~113 bench-hours, which is three weeks at one bench and under a week at
+three. A full disk stops recording mid-repair. Central config is convenience;
+storage is data loss.
+
+Build it when bench 2 and 3 arrive — by then it saves real trips, and the storage
+work will have been done.
