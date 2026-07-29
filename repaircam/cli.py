@@ -110,6 +110,11 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
 
     Point the camera at a real phone at 60–80 cm, take a snapshot, open it, and
     check that the screen and screws are sharp.
+
+    It samples the MAIN stream, the one that gets recorded. The sub-stream is
+    far lower resolution, so a perfectly focused camera can look like it cannot
+    resolve a screw simply because that image never had the pixels — judging
+    focus on it would fail a camera that is fine.
     """
     camera = config.get_camera(args.work_center)
     backend = build_backend(camera)
@@ -118,11 +123,28 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         dest = config.ensure_data_dirs()["snapshots"] / f"{args.work_center}_{stamp}.jpg"
 
-    backend.snapshot(dest)
+    stream = "sub" if args.sub else "main"
+    backend.snapshot(dest, stream=stream)
     size_kb = round(dest.stat().st_size / 1024)
-    print(f"{OK} snapshot saved: {dest}  ({size_kb} KB)")
-    print("     Open it and check a phone at 60-80 cm is sharp (screws readable).")
+    print(f"{OK} snapshot saved: {dest}  ({size_kb} KB, {stream} stream{_dimensions(dest)})")
+    if stream == "sub":
+        print("     NOTE: sub-stream — too low-resolution to judge focus on.")
+        print("     Drop --sub for the real focus test.")
+    else:
+        print("     Open it and check a phone at 60-80 cm is sharp (screws readable).")
     return 0
+
+
+def _dimensions(path: Path) -> str:
+    """``, 2560x1440`` if ffprobe can say, else nothing. Never fatal."""
+    try:
+        streams = ffmpeg.probe(str(path)).get("streams") or []
+    except Exception:
+        return ""
+    for s in streams:
+        if s.get("width") and s.get("height"):
+            return f", {s['width']}x{s['height']}"
+    return ""
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -394,6 +416,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("snapshot", help="grab one still image (the focus test)")
     p.add_argument("work_center")
     p.add_argument("-o", "--output", help="where to write the JPEG")
+    p.add_argument(
+        "--sub", action="store_true",
+        help="use the low-resolution sub-stream (cheap, but no good for judging focus)",
+    )
     p.set_defaults(func=cmd_snapshot)
 
     p = sub.add_parser("list", help="list recorded clips")

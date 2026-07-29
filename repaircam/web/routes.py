@@ -223,7 +223,9 @@ def bench_snapshot(work_center: str):
     camera = config.get_camera(work_center)
     dest = config.ensure_data_dirs()["snapshots"] / f"{work_center}_latest.jpg"
     try:
-        build_backend(camera).snapshot(dest)
+        # Sub-stream: this is a thumbnail, and it must not steal bandwidth
+        # from a recording in progress. The focus test uses the main stream.
+        build_backend(camera).snapshot(dest, stream="sub")
     except (CaptureError, ffmpeg.FFmpegError) as exc:
         abort(503, f"could not reach the camera: {exc}")
     return send_file(dest, mimetype="image/jpeg", max_age=0)

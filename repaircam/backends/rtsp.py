@@ -99,13 +99,14 @@ class RtspBackend(CaptureBackend):
         )
         return RtspCapture(ffmpeg.RecordingProcess(command, dest))
 
-    def snapshot(self, dest: Path) -> Path:
-        # Snapshots come off the sub-stream so they cost the camera almost
-        # nothing while a recording is running on the main stream.
+    def snapshot(self, dest: Path, *, stream: str = "main") -> Path:
+        use_sub = stream == "sub"
+        url = self.camera.sub_url if use_sub else self.camera.main_url
+        safe = self.camera.safe_sub_url if use_sub else self.camera.safe_main_url
         try:
-            return ffmpeg.snapshot(self.camera.sub_url, dest)
+            return ffmpeg.snapshot(url, dest)
         except ffmpeg.FFmpegError as exc:
-            raise CaptureError(f"snapshot from {self.camera.safe_sub_url} failed: {exc}") from exc
+            raise CaptureError(f"snapshot from {safe} failed: {exc}") from exc
 
     def preview_frames(self, *, fps: int = 6, width: int = 640) -> Iterator[bytes]:
         """Yield whole JPEG frames from the sub-stream until the caller stops."""

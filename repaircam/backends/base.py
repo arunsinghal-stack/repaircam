@@ -134,8 +134,16 @@ class CaptureBackend(ABC):
         """Begin writing a clip to ``dest``."""
 
     @abstractmethod
-    def snapshot(self, dest: Path) -> Path:
-        """Write a single still image to ``dest``."""
+    def snapshot(self, dest: Path, *, stream: str = "main") -> Path:
+        """Write a single still image to ``dest``.
+
+        ``stream`` is ``"main"`` or ``"sub"``. The focus test needs the MAIN
+        stream: focus is a lens property both streams share, but the sub-stream
+        is too low-resolution to judge "can I read the screws" on, so a sharp
+        camera fails the test on detail it never had the pixels to show. The
+        live preview and bench thumbnail use ``"sub"``, which costs the camera
+        almost nothing while a recording is running.
+        """
 
     @abstractmethod
     def preview_frames(self, *, fps: int = 6, width: int = 640):

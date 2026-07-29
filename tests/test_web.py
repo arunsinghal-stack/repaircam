@@ -186,3 +186,16 @@ def test_status_says_the_trigger_is_off_when_unconfigured(client, monkeypatch, t
     page = client.get("/status").data
     assert b"Automatic start/stop" in page
     assert b"technicians start and stop recordings themselves" in page
+
+
+def test_bench_thumbnail_stays_on_the_cheap_stream(client, camera, monkeypatch):
+    """The page thumbnail must not steal bandwidth from a live recording.
+
+    The focus test is the opposite case and uses the main stream — see
+    tests/test_snapshot_stream.py.
+    """
+    stub = StubBackend(camera)
+    monkeypatch.setattr("repaircam.web.routes.build_backend", lambda _c: stub)
+
+    assert client.get("/bench/WC2/snapshot.jpg").status_code == 200
+    assert stub.snapshots == ["sub"]

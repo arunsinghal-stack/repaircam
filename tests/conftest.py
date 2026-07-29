@@ -81,6 +81,7 @@ class StubBackend(CaptureBackend):
         #: between ffmpeg starting and the camera answering.
         self.slow_start = slow_start
         self.captures: list[StubCapture] = []
+        self.snapshots: list[str] = []
 
     def start(self, dest: Path, *, duration: float | None = None) -> StubCapture:
         if self.fail == "start":
@@ -91,8 +92,9 @@ class StubBackend(CaptureBackend):
         self.captures.append(capture)
         return capture
 
-    def snapshot(self, dest: Path) -> Path:
+    def snapshot(self, dest: Path, *, stream: str = "main") -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
+        self.snapshots.append(stream)
         dest.write_bytes(b"jpeg")
         return dest
 
