@@ -101,6 +101,24 @@ Less has to be built than this plan first assumed:
   `parse_active()` reads `payload["active"]` and ignores every other key, so an
   older recorder keeps working against a newer saar-seva.
 
+## The one local line that can still veto a central change
+
+`saarseva.yaml` has a `work_centers:` list. Naming benches in it turns it into
+an **allow-list**, and a bench added in the admin panel then arrives in
+`cameras.yaml` correctly, has its Odoo id, has its camera — and still never
+records, because a file on the recorder excludes it. Nothing about the bench
+looks wrong.
+
+So: **leave `work_centers` empty**, which means "every bench in cameras.yaml
+that has an `odoo_workcenter_id`". That is the setting that makes adding a bench
+centrally genuinely sufficient. The example file now ships empty and says why.
+
+When it is not empty and it is excluding a fully-configured bench, the recorder
+logs a warning and the status page says so under **"Not auto-recording"** — a
+bench with no `odoo_workcenter_id` is deliberately not reported there, since
+`work_centers` is not the reason it is absent and saying so would send someone
+editing the wrong file.
+
 ## What can never be central, and why
 
 `base_url` and `api_key` must stay in `saarseva.yaml` on the recorder **permanently**.

@@ -37,6 +37,19 @@
     <dd class="{{ 'warn-text' if trigger.ok is false else '' }}">
       {{ trigger.summary }}
       {%- if trigger.seconds_since_tick is not none %} ({{ trigger.seconds_since_tick }}s ago){% endif %}</dd>
+    {% if trigger.vetoed_benches %}
+    <dt>Not auto-recording</dt>
+    <dd class="warn-text">
+      {{ trigger.vetoed_benches|join(', ') }}
+      {{ 'has' if trigger.vetoed_benches|length == 1 else 'have' }} a camera and an Odoo
+      work centre, but {{ 'is' if trigger.vetoed_benches|length == 1 else 'are' }} not
+      listed in <code>work_centers</code> in saarseva.yaml, so
+      {{ 'it' if trigger.vetoed_benches|length == 1 else 'they' }} will never record by
+      themselves.
+      <div class="muted small">Empty that list to allow every configured bench.</div>
+    </dd>
+    {% endif %}
+
     <dt>Recording light</dt>
     <dd>
       {% if trigger.heartbeat_error %}

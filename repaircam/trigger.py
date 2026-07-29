@@ -111,6 +111,10 @@ class Trigger:
         # Odoo work-centre id -> bench code. saar-seva talks in Odoo ids;
         # everything else here talks in bench codes.
         self._bench_by_workcenter: dict[int, str] = {}
+        #: Benches fully configured for auto-recording that saarseva.yaml's
+        #: work_centers list is nonetheless excluding. Reported, because the
+        #: bench looks perfectly set up from every other angle.
+        self.vetoed_benches: list[str] = []
         self.reload_benches()
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -136,12 +140,31 @@ class Trigger:
             return self._bench_by_workcenter
 
         allowed = set(self.config.work_centers)
+        vetoed: list[str] = []
         for work_center, camera in cameras.items():
-            if allowed and work_center not in allowed:
-                continue
             if camera.odoo_workcenter_id is None:
                 continue
+            if allowed and work_center not in allowed:
+                # The bench has a camera and an Odoo id — everything it needs —
+                # and saarseva.yaml is the only reason it will not be filmed.
+                # With the camera list maintained centrally this is a trap:
+                # adding a bench in the admin panel is supposed to be enough,
+                # and a stale local allow-list silently vetoes it.
+                vetoed.append(work_center)
+                continue
             mapping[camera.odoo_workcenter_id] = work_center
+
+        if vetoed and vetoed != self.vetoed_benches:
+            log.warning(
+                "%s %s a camera and an Odoo work centre but %s NOT in work_centers "
+                "in saarseva.yaml, so %s will never auto-record. Empty that list to "
+                "allow every configured bench.",
+                ", ".join(sorted(vetoed)),
+                "has" if len(vetoed) == 1 else "have",
+                "is" if len(vetoed) == 1 else "are",
+                "it" if len(vetoed) == 1 else "they",
+            )
+        self.vetoed_benches = sorted(vetoed)
 
         if not mapping:
             log.warning(
@@ -565,6 +588,7 @@ class Trigger:
             "config_sync_summary": sync.summary() if sync else "",
             "config_sync_error": self.last_sync_error,
             "config_sync_waiting": list(sync.deferred) if sync else [],
+            "vetoed_benches": list(self.vetoed_benches),
             "heartbeat_error": self.last_heartbeat_error,
             "heartbeat_seconds_ago": (
                 round(time.time() - self.last_heartbeat_at, 1) if self.last_heartbeat_at else None

@@ -30,10 +30,18 @@ saarseva:
   # rude to a sleeping Render instance.
   poll_seconds: 5
 
-  # Only these benches are auto-triggered, by bench code. Leave empty for every
-  # bench in cameras.yaml that has an odoo_workcenter_id. A bench without that
-  # id is never auto-triggered, whatever is listed here.
-  work_centers: ["WC2"]
+  # Which benches may auto-record, by bench code.
+  #
+  # LEAVE THIS EMPTY unless you have a reason not to. Empty means "every bench
+  # in cameras.yaml that has an odoo_workcenter_id", which is what you want once
+  # the camera list is maintained in saar-seva's admin panel: adding a bench
+  # there is then genuinely all it takes.
+  #
+  # Naming benches here turns it into an allow-list, and a bench added centrally
+  # but missing from it is fully configured, looks correct everywhere, and still
+  # never records. The status page calls that out, but the simplest fix is to
+  # leave this empty.
+  work_centers: []
 
   # Set to false to keep the settings but stop polling.
   enabled: true

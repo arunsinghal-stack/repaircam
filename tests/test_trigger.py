@@ -992,3 +992,30 @@ def test_a_delivered_heartbeat_clears_the_warning(trigger, client):
     status = trigger.status()
     assert status["heartbeat_error"] == ""
     assert status["heartbeat_seconds_ago"] is not None
+
+
+def test_a_bench_vetoed_by_saarseva_yaml_is_reported(pool, client, catalogue, cameras):
+    """The trap of the central camera list: a bench added in the admin panel
+    arrives in cameras.yaml correctly and still never records, because a stale
+    allow-list in saarseva.yaml excludes it. Everything else about it looks
+    right, so it has to be said out loud."""
+    only_wc2 = SaarSevaConfig(
+        base_url="https://example.test", api_key="token",
+        link_base="http://192.168.0.50:8080", work_centers=["WC2"],
+    )
+    trigger = Trigger(pool, client, catalogue=catalogue, config=only_wc2)
+
+    assert trigger.vetoed_benches == ["WC3"]
+    assert trigger.status()["vetoed_benches"] == ["WC3"]
+    assert 13 not in trigger.workcenter_ids
+
+
+def test_an_empty_list_allows_every_configured_bench(trigger):
+    assert trigger.vetoed_benches == []
+    assert sorted(trigger.workcenter_ids) == [12, 13]
+
+
+def test_a_bench_with_no_odoo_id_is_not_reported_as_vetoed(trigger):
+    """WC4 has no odoo_workcenter_id, so work_centers is not why it is absent —
+    saying otherwise would send someone editing the wrong file."""
+    assert "WC4" not in trigger.vetoed_benches
