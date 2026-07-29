@@ -43,6 +43,12 @@ class State(str, Enum):
     FINALISING = "finalising"  # joining segments on Done
 
 
+#: How long a bench may sit between Start and the first frame before the UI
+#: says something is wrong. A healthy VIGI opens its stream in well under a
+#: second; several seconds means the camera is not answering.
+CONNECT_WARN_S = 5.0
+
+
 def slugify(value: str, *, max_length: int = 40) -> str:
     """Make a string safe for a filename.
 
@@ -140,16 +146,35 @@ class Recorder:
         state = self.state  # property has the side effect of noticing a crash
         session = self._session
         elapsed = 0.0
+        capturing = False
+        waiting = 0.0
         if session:
             elapsed = session.recorded_seconds
             if state is State.RECORDING and self._capture:
-                elapsed += self._capture.elapsed
+                capturing = self._capture.capturing
+                if capturing:
+                    # Count from the first frame, so the timer never runs ahead
+                    # of the footage it claims to describe.
+                    elapsed += self._capture.capturing_elapsed
+                else:
+                    waiting = self._capture.elapsed
+
+        connecting = state is State.RECORDING and not capturing
 
         return {
             "work_center": self.work_center,
             "camera": self.camera.name if self.camera else "",
             "state": state.value,
+            # `recording` means "Start has been pressed"; `capturing` means
+            # "frames are being written". They differ for the seconds it takes
+            # to open the stream — and forever, if the camera never answers.
+            # The red light must follow `capturing`.
             "recording": state is State.RECORDING,
+            "capturing": capturing,
+            "connecting": connecting,
+            "connecting_s": round(waiting, 1),
+            "camera_slow": connecting and waiting >= CONNECT_WARN_S,
+            "state_label": "connecting to camera" if connecting else state.value,
             "busy": state is not State.IDLE,
             "segments": len(session.segments) if session else 0,
             "elapsed_s": round(elapsed, 1),
@@ -486,7 +511,12 @@ class RecorderPool:
                 out[work_center] = {
                     "work_center": work_center,
                     "state": "error",
+                    "state_label": "error",
                     "recording": False,
+                    "capturing": False,
+                    "connecting": False,
+                    "connecting_s": 0.0,
+                    "camera_slow": False,
                     "busy": False,
                     "elapsed_hms": "0:00:00",
                     "last_error": str(exc),

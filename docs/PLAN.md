@@ -339,10 +339,10 @@ than risk:
 The `/status` page lists orphans, because they appear in no other page — they are not in
 the library, having never become clips.
 
-## 11. Recording indicator — showing *capture*, not *intent*
+## 11. Recording indicator — showing *capture*, not *intent* (BUILT)
 
-The red dot on the bench page currently means "we asked ffmpeg to start". It should
-mean "frames are being written".
+The red dot on the bench page used to mean "we asked ffmpeg to start". It now means
+"frames are being written".
 
 The gap is real: after `Popen` returns, ffmpeg still has to resolve the host, open the
 RTSP connection, authenticate, negotiate the stream, wait for a keyframe, and write
@@ -353,26 +353,33 @@ Detecting the true start is simple and backend-agnostic: **the destination file 
 its first bytes**. Poll `dest.stat().st_size`; once it is non-zero, capture is real.
 It needs no ffmpeg log parsing and works for any future backend that writes a file.
 
-What it changes:
+What was built:
 
-- `ActiveCapture` gains a `capturing` property; `RtspCapture` implements it by
-  watching the file, latching true once so it never flickers.
-- `Recorder.status()` reports `capturing` alongside `recording`.
-- The bench page shows **amber "connecting to camera…"** between the button press and
-  the first byte, and only then the **blinking red**. The dashboard does the same.
-- If capture has not begun within a few seconds, say so — "camera not responding" —
-  rather than leave a technician trusting a light that means nothing yet.
-- The elapsed timer should count from the first byte, not the button press, so the
-  number on screen matches the clip that comes out.
+- `ActiveCapture.capturing` in `backends/base.py` — it watches `dest` and latches true
+  on the first byte, so a later failed `stat()` cannot make a live recording look dead.
+  Concrete on the base class, so every future backend that writes a file inherits it.
+  `RtspCapture` only has to expose its `dest`.
+- `Recorder.status()` reports `capturing`, `connecting`, `connecting_s`, `camera_slow`
+  and `state_label` alongside `recording`. `recording` still means "Start was pressed";
+  the light follows `capturing`.
+- The bench page and the dashboard show **amber and steady — "connecting to camera"** —
+  between the button press and the first byte, and only then the **blinking red**.
+- After `CONNECT_WARN_S` (5s) of silence the bench page says the camera has sent no
+  video and nothing is being recorded, rather than leave a technician trusting a light
+  that means nothing yet.
+- The elapsed timer counts from the first byte. So does `Segment.started_at`, so a
+  clip's recorded duration no longer includes the time spent connecting.
 
-The same signal is what any *physical* indicator should be wired to — a lamp driven by
-"we pressed a button" would repeat the same lie in hardware.
+The same signal is what any *physical* indicator must be wired to — a lamp driven by
+"we pressed a button" would repeat the same lie in hardware. Nothing physical is built;
+if it ever is, it reads `capturing`, not the button.
 
 ## 12. Open items
 
 - **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
   enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
 - **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
-- **Phase 5's saar-seva half** — the two endpoints, per PHASE5-CONTRACT.md.
+- **Phase 5 has never run for real.** Both halves are built and saar-seva's are merged
+  to its `staging`, but no clip has yet been triggered by a technician's timer.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from
   sidecars, and it can, but the command to do it is not written.

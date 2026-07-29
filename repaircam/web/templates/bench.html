@@ -10,11 +10,15 @@
       <img id="preview" src="{{ url_for('repaircam.bench_preview', work_center=camera.work_center) }}"
            alt="Live view of {{ camera.name }}">
       <div class="preview-overlay">
-        <span class="rec-dot state-{{ status.state }}"></span>
-        <span data-field="state">{{ status.state }}</span>
+        <span class="rec-dot state-{{ status.state }}{{ ' connecting' if status.connecting }}"></span>
+        <span data-field="state">{{ status.state_label }}</span>
         <span class="timer-inline" data-field="elapsed">{{ status.elapsed_hms }}</span>
       </div>
     </div>
+    <p class="warn-text small" id="camera-warning" {{ '' if status.camera_slow else 'hidden' }}>
+      The camera has not sent any video yet. Check it is powered and plugged in —
+      nothing is being recorded until the light turns red.
+    </p>
     <p class="muted small">
       Live view uses the low-quality stream so it never slows the recording.
       If it stays black, <a href="{{ url_for('repaircam.bench_snapshot', work_center=camera.work_center) }}">
@@ -133,10 +137,16 @@
   RepairCam.pollStatus(function (data) {
     var status = data.benches[bench];
     if (!status) return;
-    RepairCam.setField(document, 'state', status.state);
+    RepairCam.setField(document, 'state', status.state_label);
     RepairCam.setField(document, 'elapsed', status.elapsed_hms);
+    // Amber and steady while ffmpeg is still opening the stream; the red blink
+    // only starts once frames are actually being written.
     var dot = document.querySelector('.rec-dot');
-    if (dot) dot.className = 'rec-dot state-' + status.state;
+    if (dot) {
+      dot.className = 'rec-dot state-' + status.state + (status.connecting ? ' connecting' : '');
+    }
+    var warning = document.getElementById('camera-warning');
+    if (warning) warning.hidden = !status.camera_slow;
 
     // The camera can drop out on its own; reload so the buttons match reality.
     if (wasBusy !== status.busy) window.location.reload();

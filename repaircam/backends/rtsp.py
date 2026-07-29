@@ -30,6 +30,10 @@ class RtspCapture(ActiveCapture):
         self._segment: Segment | None = None
 
     @property
+    def dest(self) -> Path:
+        return self._process.dest
+
+    @property
     def running(self) -> bool:
         return self._process.running
 
@@ -57,7 +61,10 @@ class RtspCapture(ActiveCapture):
 
         self._segment = Segment(
             path=path,
-            started_at=self._process.started_at,
+            # The clock starts at the first frame, not at Popen — otherwise the
+            # time spent connecting is counted as footage that does not exist,
+            # and every clip's duration is a little long.
+            started_at=self.capture_started_at or self._process.started_at,
             ended_at=time.time(),
             ok=ok,
             error=error,

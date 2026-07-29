@@ -109,11 +109,20 @@ migration.
 
 ### A2. Admin screen
 
-A table: **work centre** (dropdown from `odoo.list_workcenters()`, which already
-exists and already feeds the TRC Team tab), then IP, port, stream paths, audio,
-enabled. Same shape as the Team tab that maps technicians to work centres, so
-the admin sees one consistent idea: *a work centre is a bench; it has people and
-it has a camera.*
+**Where it goes.** saar-seva moved the technician↔work-centre mapping out of the
+exec-side TRC console (the Team tab is gone) into **Admin → TRC settings →
+“Technicians & work centres”**, gated on the `trc.manage` permission
+(commit `b8f4b22`). The camera list belongs **right next to it, in the same
+settings page, behind the same gate** — which is exactly the admin-only decision
+below, already enforced by existing code rather than by a new rule.
+
+That move also leaves a work-centre picker ready to reuse:
+`GET /admin/trc-workcenters` already returns `odoo.list_workcenters()` for the
+admin panel, so the camera table's dropdown needs no new endpoint.
+
+A table: **work centre** (that dropdown), then IP, port, stream paths, audio,
+enabled. Sitting beside the technician mapping, the admin sees one consistent
+idea: *a work centre is a bench; it has people and it has a camera.*
 
 Saving validates and **bumps `revision`**.
 
@@ -191,7 +200,9 @@ service change what the recorder points at:
 ## Decided
 
 1. **Admin panel only.** TRC managers who need it are given admin access;
-   the camera list is not exposed at manager level.
+   the camera list is not exposed at manager level. In practice this means the
+   `trc.manage` permission, the same gate the technician↔work-centre mapping
+   now sits behind.
 2. **Removing a bench sets `enabled: false`**, it does not delete the row. Clips
    already recorded still reference that work centre, and a deleted row would
    orphan them.
