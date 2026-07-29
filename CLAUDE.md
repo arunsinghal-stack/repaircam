@@ -42,9 +42,11 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - Buying rule: **motorized varifocal only** (a lens focal RANGE like 2.8–12mm). A single mm number = fixed = reject.
 
 ## Status / phases
-- **Phase 0 (bench proof):** recording via ffmpeg confirmed working on Linux. The **focus test**
-  (sharp on a real phone at ~60–80 cm) is the remaining gate — not yet reported passed.
-  Run it with `python3 -m repaircam.cli snapshot WC2`.
+- **Phase 0 (bench proof): PASSED 2026-07-29.** Recording via ffmpeg confirmed on Linux, and
+  the **focus test** passed on the shop bench — the owner judged a real phone at ~60–80 cm
+  sharp on the VIGI C540V after adjusting the camera's settings. Re-run it any time with
+  `python3 -m repaircam.cli snapshot WC2`; it samples the MAIN stream, because the
+  sub-stream lacks the resolution to judge "readable screws" on and would fail a good camera.
 - **Phase 1 (DONE, in repo):** recorder core in `repaircam/` — `CaptureBackend`+`RtspBackend`, `Recorder`
   state machine, SQLite catalogue, `cli.py`. Test: `python3 -m repaircam.cli record WC2 --duration 20`.
 - **Phase 2 (DONE, in repo):** Flask web UI in `repaircam/web/` — dashboard, bench page with live

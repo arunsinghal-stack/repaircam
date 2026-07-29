@@ -376,8 +376,6 @@ if it ever is, it reads `capturing`, not the button.
 
 ## 12. Open items
 
-- **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
-  enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
 - **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
 - **Phase 5 has never run for real.** Both halves are built and saar-seva's are merged
   to its `staging`, but no clip has yet been triggered by a technician's timer.
