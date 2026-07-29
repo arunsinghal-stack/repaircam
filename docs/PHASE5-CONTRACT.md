@@ -222,3 +222,57 @@ The last rule exists because the queue is ordered oldest-first: without it, one
 clip that can never post sits at the head of it and silently stops every later
 clip's link from reaching Odoo. That is exactly what happened on the first live
 run, and nothing in the UI said so.
+
+---
+
+## `POST /trc/recorder-heartbeat` — so a light on saar-seva can tell the truth
+
+**Not built on the saar-seva side yet.** RepairCam sends this already and treats a
+404 as "not deployed", exactly as it does for the packing endpoints.
+
+### Why it has to exist
+
+The technician's screen shows `running = !!job.active_since` — *the timer is
+running*. A recording light driven by that would be confidently red in every case
+that actually matters:
+
+| What is wrong | Timer says | Camera is |
+|---|---|---|
+| Recorder box off or crashed | running | not filming |
+| Camera unplugged or wrong password | running | not filming |
+| Bench missing `odoo_workcenter_id` | running | never even asked to film |
+| Shop internet down | running | never heard the timer start |
+
+RepairCam fixed this same confusion on its own bench page: the dot means *frames
+are landing on disk*, not *a button was pressed*. Putting the timer-driven version
+on saar-seva would reintroduce it in the worse place — the screen the technician
+actually looks at.
+
+saar-seva cannot ask, because nothing outside the shop can open a connection into
+it. So RepairCam tells it, on the poll it already makes.
+
+### Shape
+
+```json
+{ "recorder": "http://192.168.1.163:8080",
+  "benches": [ {"workcenter_id": 2, "work_center": "WC2",
+                "state": "recording", "message": ""} ] }
+```
+
+`state` is one of `recording`, `connecting`, `camera_not_responding`, `paused`,
+`error`, `idle`. Only benches with an `odoo_workcenter_id` are reported — a bench
+saar-seva has no id for is a bench it cannot show a light against.
+
+### The rule that makes it honest
+
+**Freshness is the signal.** saar-seva stores each bench's state with the time it
+arrived, and the screen must show **"unknown"** — grey, not red — once that is
+older than a few polls (20s is right for a 5s poll). Otherwise a recorder that
+dies mid-repair leaves a permanent red light, which is the original lie with extra
+steps.
+
+RepairCam deliberately sends **no** heartbeat when its own poll failed. It cannot
+reach saar-seva then anyway, and "unknown" is the true answer.
+
+A heartbeat that fails for any reason is logged at debug and otherwise ignored.
+The shop filming its work matters; a light on a screen does not.

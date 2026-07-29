@@ -436,6 +436,27 @@ class SaarSevaClient:
         self._request("POST", "/trc/recordings", body=body)
         return True
 
+    def post_heartbeat(self, benches: list[dict]) -> bool:
+        """Tell saar-seva what each bench's camera is ACTUALLY doing.
+
+        saar-seva cannot see into the shop, so without this its technician
+        screen can only show "a timer is running" — which is not the same thing
+        as "you are being filmed", and differs in every case that matters: the
+        recorder box off, the camera unplugged, the bench missing its
+        odoo_workcenter_id, the shop's internet down. A light driven by the
+        timer would be confidently red through all of them.
+
+        Sent on the poll RepairCam already makes. Freshness is the point, so
+        saar-seva must treat a heartbeat it has not heard for a few polls as
+        "unknown", never as the last state it saw.
+        """
+        self._request(
+            "POST",
+            "/trc/recorder-heartbeat",
+            body={"recorder": self.config.link_base, "benches": benches},
+        )
+        return True
+
     def check(self, workcenter_ids: list[int] | None = None) -> tuple[bool, str]:
         """Is saar-seva reachable and is the token accepted? For the status page."""
         try:

@@ -45,7 +45,12 @@ class FakeClient:
         self.posted_packing: list[int] = []
         self.active_packing: list[ActiveOperation] = []
         self.packing_fail_with: str | None = None
+        self.packing_fail_status: int | None = None
         self.asked_for = None
+        #: Every heartbeat body the trigger sent.
+        self.heartbeats: list[list[dict]] = []
+        self.heartbeat_fail_with: str | None = None
+        self.heartbeat_fail_status: int | None = None
 
     def fetch_active(self, workcenter_ids=None):
         self.asked_for = workcenter_ids
@@ -55,8 +60,14 @@ class FakeClient:
 
     def fetch_active_packing(self, workcenter_ids=None):
         if self.packing_fail_with:
-            raise SaarSevaError(self.packing_fail_with)
+            raise SaarSevaError(self.packing_fail_with, status=self.packing_fail_status)
         return list(self.active_packing)
+
+    def post_heartbeat(self, benches):
+        if self.heartbeat_fail_with:
+            raise SaarSevaError(self.heartbeat_fail_with, status=self.heartbeat_fail_status)
+        self.heartbeats.append(benches)
+        return True
 
     def _maybe_fail(self, recording):
         if not self.post_fail_with:
@@ -658,6 +669,7 @@ def test_one_bench_cannot_do_both_at_once(trigger, client, pool):
 def test_packing_endpoints_not_deployed_yet_does_not_break_repair(trigger, client, pool):
     """saar-seva without /pack/* answers 404. Repair recording must continue."""
     client.packing_fail_with = "GET /pack/active failed: HTTP 404 — /pack/active does not exist on the server yet"
+    client.packing_fail_status = 404
     client.active = [op(12)]
 
     result = trigger.tick()
@@ -703,3 +715,70 @@ def test_parses_the_real_pack_active_row():
 def test_packing_rows_without_a_bench_are_dropped():
     ops = parse_active_packing([{"recording_id": "x"}, {"recording_id": "y", "workcenter_id": 31}])
     assert [o.packing_recording_id for o in ops] == ["y"]
+
+
+# --------------------------------------------------------------------------
+# the heartbeat — what a light on saar-seva is allowed to mean
+# --------------------------------------------------------------------------
+
+
+def test_heartbeat_reports_recording_only_when_frames_are_landing(trigger, client, pool):
+    """The whole point. saar-seva cannot see into the shop, so if it showed a
+    red light for "the timer is running" it would be confidently wrong every
+    time the camera was unplugged or the recorder was off."""
+    client.active = [op(12)]
+    trigger.tick()
+
+    states = {b["work_center"]: b["state"] for b in client.heartbeats[-1]}
+    assert states["WC2"] == "recording"
+    assert states["WC3"] == "idle"
+
+
+def test_heartbeat_says_connecting_before_the_first_frame(trigger, client, pool, camera,
+                                                          catalogue, data_root):
+    """A camera that has not answered yet must not read as 'recording'."""
+    pool._recorders["WC2"] = Recorder(
+        "WC2",
+        backend=StubBackend(camera, slow_start=True),
+        catalogue=catalogue,
+        data_root=data_root,
+    )
+    client.active = [op(12)]
+    trigger.tick()
+
+    states = {b["work_center"]: b["state"] for b in client.heartbeats[-1]}
+    assert states["WC2"] == "connecting"
+
+
+def test_a_bench_with_no_odoo_id_is_not_reported(trigger, client):
+    """WC4 has no odoo_workcenter_id, so saar-seva has no bench to show it on."""
+    trigger.tick()
+    assert "WC4" not in {b["work_center"] for b in client.heartbeats[-1]}
+
+
+def test_a_saar_seva_without_the_endpoint_is_not_a_fault(trigger, client, pool):
+    """The endpoint ships later than this code. Until then, recording is
+    unaffected and nothing is logged as an error."""
+    client.heartbeat_fail_with = "POST /trc/recorder-heartbeat failed: HTTP 404"
+    client.heartbeat_fail_status = 404
+    client.active = [op(12)]
+
+    result = trigger.tick()
+
+    assert result.ok
+    assert result.started == ["WC2"]
+    assert pool.get("WC2").state is State.RECORDING
+
+
+def test_a_failed_poll_sends_no_heartbeat(trigger, client, pool):
+    """saar-seva going quiet is exactly when its screen should say 'unknown'
+    rather than keep showing the last thing it heard."""
+    client.active = [op(12)]
+    trigger.tick()
+    sent = len(client.heartbeats)
+
+    client.fail_with = "could not reach saar-seva"
+    trigger.tick()
+
+    assert len(client.heartbeats) == sent
+    assert pool.get("WC2").state is State.RECORDING  # and recording carries on

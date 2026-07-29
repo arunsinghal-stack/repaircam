@@ -165,6 +165,11 @@ class Trigger:
                     self._finish(work_center, result, reason="no longer active")
 
         self._post_pending_links(result)
+        # After reconciling, so what is reported is the state the benches are
+        # actually in. Not sent when the poll failed: saar-seva is the same
+        # server, and its screen going "unknown" is the honest answer when
+        # RepairCam cannot reach it.
+        self._send_heartbeat()
         self._remember(result)
         if result.changed:
             log.info("trigger: %s", result.summary())
@@ -185,7 +190,7 @@ class Trigger:
         except SaarSevaError as exc:
             # A saar-seva without the packing endpoints answers 404. That is a
             # deployment state, not a fault: keep the repair trigger working.
-            if "does not exist on the server yet" not in str(exc):
+            if exc.status != 404:
                 raise
             log.debug("packing endpoints not deployed yet: %s", exc)
         return operations
@@ -318,6 +323,53 @@ class Trigger:
             self.catalogue.mark_link_posted(recording.id)
             self._operations.pop(recording.id, None)
             result.links_posted.append(recording.id)
+
+    #: What a bench's light should show, from what the camera is really doing.
+    #: `recording` is deliberately NOT "the timer is running" — see the note in
+    #: SaarSevaClient.post_heartbeat.
+    @staticmethod
+    def _bench_state(status: dict) -> str:
+        if status.get("capturing"):
+            return "recording"
+        if status.get("camera_slow"):
+            return "camera_not_responding"
+        if status.get("connecting"):
+            return "connecting"
+        if status.get("state") == "paused":
+            return "paused"
+        if status.get("state") == "error" or status.get("last_error"):
+            return "error"
+        return "idle"
+
+    def _send_heartbeat(self) -> None:
+        """Report every mapped bench's real capture state to saar-seva.
+
+        Best-effort by design. saar-seva not having the endpoint, or being
+        unreachable, must never disturb recording — the shop filming its work
+        matters, a light on a screen does not.
+        """
+        benches = []
+        statuses = self.pool.statuses()
+        for workcenter_id, work_center in sorted(self._bench_by_workcenter.items()):
+            status = statuses.get(work_center)
+            if status is None:
+                continue
+            benches.append({
+                "workcenter_id": workcenter_id,
+                "work_center": work_center,
+                "state": self._bench_state(status),
+                "message": status.get("last_error", ""),
+            })
+        if not benches:
+            return
+
+        try:
+            self.client.post_heartbeat(benches)
+        except SaarSevaError as exc:
+            if exc.status == 404:
+                log.debug("saar-seva has no recorder-heartbeat endpoint yet")
+            else:
+                log.debug("heartbeat not delivered: %s", exc)
 
     # -- background loop ----------------------------------------------------
 
