@@ -68,6 +68,13 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   Off until `repaircam/saarseva.yaml` exists AND saar-seva has `REPAIRCAM_API_KEY` set
   (without it those endpoints 503 everyone).
 
+## Planned, not built
+- **Packing video:** packer presses Record/Stop on a saar-seva packing job; each clip's link
+  goes to the **outgoing** Delivery Order's chatter. Plan + the one-step vs two-step DO rule:
+  docs/PACKING-VIDEO-PLAN.md. Nothing implemented yet.
+- **Retention/archive:** nothing deletes or moves old clips. ~1.8 GB per bench-hour, so the
+  SSD will fill and recording will stop mid-repair. Next real build item.
+
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.
   A template lives at `repaircam/cameras.example.yaml`.
