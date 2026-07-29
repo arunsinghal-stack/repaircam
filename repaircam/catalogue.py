@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS recordings (
     audio_codec   TEXT    DEFAULT '',
     notes         TEXT    DEFAULT '',
     link_posted   INTEGER DEFAULT 0,
+    -- Which integration asked for this clip: '' (started by hand), 'repair'
+    -- or 'packing'. source_ref is that system's own id for the session.
+    -- Kept in the database, not just in memory, so a clip whose link has not
+    -- been posted yet still knows where to post it after a restart.
+    source        TEXT    DEFAULT '',
+    source_ref    TEXT    DEFAULT '',
     created_at    TEXT    NOT NULL
 );
 
@@ -113,6 +119,11 @@ class Recording:
     video_codec: str = ""
     audio_codec: str = ""
     link_posted: int = 0
+    #: Which integration asked for this clip ('', 'repair', 'packing') and that
+    #: system's own id for the session, so the link can be posted back to the
+    #: right place even after a restart.
+    source: str = ""
+    source_ref: str = ""
     created_at: str = field(default_factory=utcnow)
     labels: JobLabels = field(default_factory=JobLabels)
 
@@ -164,6 +175,15 @@ class Catalogue:
     def _init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            # Additive migrations for databases made by an earlier version.
+            # SQLite has no ADD COLUMN IF NOT EXISTS, so ask first.
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info(recordings)")}
+            for column, ddl in (
+                ("source", "ALTER TABLE recordings ADD COLUMN source TEXT DEFAULT ''"),
+                ("source_ref", "ALTER TABLE recordings ADD COLUMN source_ref TEXT DEFAULT ''"),
+            ):
+                if column not in existing:
+                    conn.execute(ddl)
             conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
 
     @staticmethod
@@ -185,6 +205,8 @@ class Catalogue:
             video_codec=row["video_codec"],
             audio_codec=row["audio_codec"],
             link_posted=row["link_posted"],
+            source=(row["source"] if "source" in row.keys() else "") or "",
+            source_ref=(row["source_ref"] if "source_ref" in row.keys() else "") or "",
             created_at=row["created_at"],
             labels=JobLabels(
                 mo_name=row["mo_name"],
@@ -207,8 +229,9 @@ class Catalogue:
                     work_center, camera_name, mo_name, operation, device, imei,
                     technician, started_at, ended_at, duration_s, segments, path,
                     sidecar_path, size_bytes, width, height, frame_rate,
-                    video_codec, audio_codec, notes, link_posted, created_at
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    video_codec, audio_codec, notes, link_posted, source,
+                    source_ref, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     recording.work_center,
@@ -232,6 +255,8 @@ class Catalogue:
                     recording.audio_codec,
                     recording.labels.notes,
                     recording.link_posted,
+                    recording.source,
+                    recording.source_ref,
                     recording.created_at,
                 ),
             )
@@ -257,6 +282,18 @@ class Catalogue:
                     labels.notes,
                     recording_id,
                 ),
+            )
+
+    def set_source(self, recording_id: int, source: str, source_ref: str) -> None:
+        """Record which integration a clip came from, and its id there.
+
+        Written when the clip is filed rather than kept in memory, so a restart
+        before the link is posted does not lose where it should go.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET source=?, source_ref=? WHERE id=?",
+                (source, source_ref, recording_id),
             )
 
     def mark_link_posted(self, recording_id: int) -> None:
@@ -339,7 +376,8 @@ class Catalogue:
         """
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM recordings WHERE link_posted = 0 AND mo_name != ''"
+                "SELECT * FROM recordings WHERE link_posted = 0"
+                "   AND (source != '' OR mo_name != '')"
                 " ORDER BY id ASC LIMIT ?",
                 (limit,),
             ).fetchall()

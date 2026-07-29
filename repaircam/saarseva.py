@@ -134,12 +134,27 @@ def is_configured(path: Path | None = None) -> bool:
 # --------------------------------------------------------------------------
 
 
+#: What kind of work a clip is of. Decides which endpoint its link is posted
+#: back to, and is stored on the catalogue row so a restart does not lose it.
+KIND_REPAIR = "repair"
+KIND_PACKING = "packing"
+
+
 @dataclass(frozen=True)
 class ActiveOperation:
-    """One timer a technician currently has running in saar-seva."""
+    """One thing saar-seva says is being recorded right now.
 
-    #: saar-seva's repair_time_log id — see `key`.
+    Covers both integrations: a technician's repair timer, and a packer filming
+    an order. They differ only in where the identity comes from and where the
+    finished link is posted.
+    """
+
+    #: "repair" or "packing".
+    kind: str = KIND_REPAIR
+    #: saar-seva's repair_time_log id — see `key`. Repair only.
     time_log_id: str = ""
+    #: saar-seva's packing_recording id — see `key`. Packing only.
+    packing_recording_id: str = ""
     #: Odoo work-centre id. This, not a name, is how a bench is identified;
     #: cameras.yaml carries the same number per bench.
     workcenter_id: int | None = None
@@ -155,14 +170,19 @@ class ActiveOperation:
     started_at: str = ""
 
     @property
+    def source_ref(self) -> str:
+        """saar-seva's own id for this session, whichever kind it is."""
+        return self.packing_recording_id if self.kind == KIND_PACKING else self.time_log_id
+
+    @property
     def key(self) -> str:
         """Identity of this recording session, stable from Start to Stop.
 
-        The time-log id is exactly right: saar-seva creates one per Start and
-        closes it on Stop, and never reuses it. One clip per timer session.
+        saar-seva creates one row per Start and closes it on Stop, never
+        reusing the id — exactly the property needed. One clip per session.
         """
-        if self.time_log_id:
-            return f"log:{self.time_log_id}"
+        if self.source_ref:
+            return f"{self.kind}:{self.source_ref}"
         # Older/partial responses: fall back to something stable-ish rather
         # than treating every poll as a new operation.
         return f"job:{self.job_id}|op:{self.operation}"
@@ -232,6 +252,45 @@ def parse_active(payload: Any) -> list[ActiveOperation]:
     return operations
 
 
+def parse_active_packing(payload: Any) -> list[ActiveOperation]:
+    """Read the /pack/active response — packers currently filming an order.
+
+    Labelled by order rather than by device: a packing clip's job is the order
+    it is packing, so the order/SO reference goes where the MO would.
+    """
+    if isinstance(payload, dict):
+        rows = payload.get("active", payload.get("recordings", []))
+    else:
+        rows = payload
+    if not isinstance(rows, list):
+        raise SaarSevaError(f"expected a list of active packing, got {type(payload).__name__}")
+
+    operations: list[ActiveOperation] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        workcenter_id = _int(row.get("workcenter_id"))
+        if workcenter_id is None:
+            log.warning("ignoring active packing with no workcenter_id: %s", row)
+            continue
+        operations.append(
+            ActiveOperation(
+                kind=KIND_PACKING,
+                packing_recording_id=_text(row.get("recording_id")),
+                workcenter_id=workcenter_id,
+                workcenter_name=_text(row.get("workcenter_name")),
+                job_id=_text(row.get("packing_job_id")),
+                # The order is what a packing clip is "about".
+                mo_name=_text(row.get("so_names") or row.get("order_ref")),
+                operation="Packing",
+                device=_text(row.get("ship_to_name")),
+                technician=_text(row.get("packer")),
+                started_at=_text(row.get("started_at")),
+            )
+        )
+    return operations
+
+
 # --------------------------------------------------------------------------
 # The client
 # --------------------------------------------------------------------------
@@ -292,6 +351,36 @@ class SaarSevaClient:
         if workcenter_ids:
             params["workcenters"] = ",".join(str(i) for i in sorted(set(workcenter_ids)))
         return parse_active(self._request("GET", "/trc/active", params=params or None))
+
+    def fetch_active_packing(self, workcenter_ids: list[int] | None = None) -> list[ActiveOperation]:
+        """Which packing benches are filming right now."""
+        params = {}
+        if workcenter_ids:
+            params["workcenters"] = ",".join(str(i) for i in sorted(set(workcenter_ids)))
+        return parse_active_packing(self._request("GET", "/pack/active", params=params or None))
+
+    def post_packing_recording(self, recording: Recording) -> bool:
+        """Hand a finished packing clip's link to saar-seva.
+
+        saar-seva decides which Delivery Order it belongs on — one-step orders
+        have a single outgoing picking, two-step ones an internal pick as well,
+        and only the outgoing one is the customer's delivery.
+        """
+        if not self.config.link_base:
+            raise SaarSevaError(
+                "link_base is not set in saarseva.yaml, so there is no address to send."
+            )
+        if not recording.source_ref:
+            raise SaarSevaError(f"clip {recording.id} has no packing session to post against")
+
+        self._request("POST", "/pack/recordings", body={
+            "recording_id": recording.source_ref,
+            "repaircam_recording_id": recording.id,
+            "url": f"{self.config.link_base}/clip/{recording.id}",
+            "duration_s": recording.duration_s,
+            "recorded_at": recording.started_at,
+        })
+        return True
 
     def post_recording(self, recording: Recording, *, operation: ActiveOperation | None = None) -> bool:
         """Hand a finished clip's link to saar-seva for the Odoo MO chatter.

@@ -15,7 +15,14 @@ import pytest
 
 from repaircam.catalogue import Catalogue, JobLabels, Recording, utcnow
 from repaircam.recorder import Recorder, RecorderPool, State
-from repaircam.saarseva import ActiveOperation, SaarSevaConfig, SaarSevaError, parse_active
+from repaircam.saarseva import (
+    KIND_PACKING,
+    ActiveOperation,
+    SaarSevaConfig,
+    SaarSevaError,
+    parse_active,
+    parse_active_packing,
+)
 from repaircam.trigger import Trigger
 
 from .conftest import StubBackend
@@ -30,6 +37,9 @@ class FakeClient:
         self.fail_with: str | None = None
         self.post_fail_with: str | None = None
         self.posted: list[int] = []
+        self.posted_packing: list[int] = []
+        self.active_packing: list[ActiveOperation] = []
+        self.packing_fail_with: str | None = None
         self.asked_for = None
 
     def fetch_active(self, workcenter_ids=None):
@@ -37,6 +47,18 @@ class FakeClient:
         if self.fail_with:
             raise SaarSevaError(self.fail_with)
         return list(self.active)
+
+    def fetch_active_packing(self, workcenter_ids=None):
+        if self.packing_fail_with:
+            raise SaarSevaError(self.packing_fail_with)
+        return list(self.active_packing)
+
+    def post_packing_recording(self, recording):
+        if self.post_fail_with:
+            raise SaarSevaError(self.post_fail_with)
+        self.posted.append(recording.id)
+        self.posted_packing.append(recording.id)
+        return True
 
     def post_recording(self, recording, *, operation=None):
         if self.post_fail_with:
@@ -374,7 +396,7 @@ def test_parses_the_real_saar_seva_row():
     }]})
     assert len(ops) == 1
     o = ops[0]
-    assert o.key == "log:3f2b"
+    assert o.key == "repair:3f2b"
     assert o.workcenter_id == 12
     assert o.object_type == "mo"
     assert o.labels().mo_name == "WH/MO/00042"
@@ -407,7 +429,7 @@ def test_a_non_list_response_is_refused():
 
 def test_identity_is_the_time_log():
     """One clip per timer session, so the timer's id is the clip's identity."""
-    assert op(time_log_id="abc").key == "log:abc"
+    assert op(time_log_id="abc").key == "repair:abc"
 
 
 def test_identity_falls_back_when_there_is_no_time_log():
@@ -455,3 +477,133 @@ def test_an_unmapped_work_centre_is_ignored(trigger, client, pool):
 
     assert result.started == []
     assert result.active == 0
+
+
+# --------------------------------------------------------------------------
+# packing video
+# --------------------------------------------------------------------------
+
+
+def pack(workcenter_id=12, *, order="S00101", recording_id=None, **kw):
+    """One packing bench filming, as saar-seva's /pack/active reports it."""
+    return ActiveOperation(
+        kind=KIND_PACKING,
+        packing_recording_id=recording_id or f"pack-{next(_COUNTER)}",
+        workcenter_id=workcenter_id,
+        mo_name=order,
+        operation="Packing",
+        **kw,
+    )
+
+
+def test_packing_starts_and_stops_like_a_repair(trigger, client, pool, catalogue):
+    client.active_packing = [pack(12, order="S00101")]
+    assert trigger.tick().started == ["WC2"]
+    assert pool.get("WC2").state is State.RECORDING
+
+    client.active_packing = []
+    assert trigger.tick().finished == ["WC2"]
+    assert catalogue.count() == 1
+    assert catalogue.list()[0].labels.mo_name == "S00101"
+
+
+def test_a_packing_clip_remembers_where_it_came_from(trigger, client, catalogue):
+    """Stored on the row, so a restart before posting still knows the endpoint."""
+    client.active_packing = [pack(12, recording_id="pr-7")]
+    trigger.tick()
+    client.active_packing = []
+    trigger.tick()
+
+    filed = catalogue.list()[0]
+    assert filed.source == KIND_PACKING
+    assert filed.source_ref == "pr-7"
+
+
+def test_a_packing_clip_is_posted_to_the_packing_endpoint(trigger, client, catalogue):
+    """A repair clip and a packing clip must not go to the same place."""
+    client.active_packing = [pack(12)]
+    trigger.tick()
+    client.active_packing = []
+    trigger.tick()
+
+    assert client.posted_packing == [catalogue.list()[0].id]
+
+
+def test_a_repair_clip_is_not_posted_to_the_packing_endpoint(trigger, client, catalogue):
+    client.active = [op(12)]
+    trigger.tick()
+    client.active = []
+    trigger.tick()
+
+    assert client.posted_packing == []
+    assert client.posted == [catalogue.list()[0].id]
+
+
+def test_repair_and_packing_run_on_different_benches_at_once(trigger, client, pool):
+    client.active = [op(12, mo="WH/MO/1")]
+    client.active_packing = [pack(13, order="S00202")]
+    result = trigger.tick()
+
+    assert sorted(result.started) == ["WC2", "WC3"]
+    assert pool.get("WC2").status()["labels"]["mo_name"] == "WH/MO/1"
+    assert pool.get("WC3").status()["labels"]["mo_name"] == "S00202"
+
+
+def test_one_bench_cannot_do_both_at_once(trigger, client, pool):
+    """A repair timer and a packing record on the same work centre: one camera,
+    so the first wins rather than the clip being mislabelled."""
+    client.active = [op(12, mo="WH/MO/1")]
+    client.active_packing = [pack(12, order="S00999")]
+    trigger.tick()
+
+    assert pool.get("WC2").status()["labels"]["mo_name"] == "WH/MO/1"
+
+
+def test_packing_endpoints_not_deployed_yet_does_not_break_repair(trigger, client, pool):
+    """saar-seva without /pack/* answers 404. Repair recording must continue."""
+    client.packing_fail_with = "GET /pack/active failed: HTTP 404 — /pack/active does not exist on the server yet"
+    client.active = [op(12)]
+
+    result = trigger.tick()
+
+    assert result.ok is True
+    assert result.started == ["WC2"]
+    assert pool.get("WC2").state is State.RECORDING
+
+
+def test_a_real_packing_failure_still_stops_the_tick(trigger, client, pool):
+    """Only a missing endpoint is tolerated. A genuine outage must not be read
+    as 'no packing is running' while repairs keep being trusted."""
+    client.active_packing = [pack(12)]
+    trigger.tick()
+    assert pool.get("WC2").state is State.RECORDING
+
+    client.packing_fail_with = "could not reach saar-seva"
+    result = trigger.tick()
+
+    assert result.ok is False
+    assert result.finished == []
+    assert pool.get("WC2").state is State.RECORDING
+
+
+def test_parses_the_real_pack_active_row():
+    """The exact shape GET /pack/active returns, verified against the server."""
+    ops = parse_active_packing({"active": [{
+        "recording_id": "3f2b", "packing_job_id": "9a1c", "workcenter_id": 31,
+        "workcenter_name": "Packing Bench 1", "order_ref": "order-one",
+        "so_names": "S00101", "ship_to_name": "A Customer", "packer": "Suresh",
+        "started_at": "2026-07-28T10:15:00",
+    }]})
+    assert len(ops) == 1
+    o = ops[0]
+    assert o.kind == KIND_PACKING
+    assert o.key == "packing:3f2b"
+    assert o.workcenter_id == 31
+    assert o.labels().mo_name == "S00101"
+    assert o.labels().operation == "Packing"
+    assert o.labels().technician == "Suresh"
+
+
+def test_packing_rows_without_a_bench_are_dropped():
+    ops = parse_active_packing([{"recording_id": "x"}, {"recording_id": "y", "workcenter_id": 31}])
+    assert [o.packing_recording_id for o in ops] == ["y"]

@@ -68,10 +68,22 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   Off until `repaircam/saarseva.yaml` exists AND saar-seva has `REPAIRCAM_API_KEY` set
   (without it those endpoints 503 everyone).
 
-## Planned, not built
-- **Packing video:** packer presses Record/Stop on a saar-seva packing job; each clip's link
-  goes to the **outgoing** Delivery Order's chatter. Plan + the one-step vs two-step DO rule:
-  docs/PACKING-VIDEO-PLAN.md. Nothing implemented yet.
+## Packing video (BOTH halves built, not yet run for real)
+- Packer presses **Record/Stop** on a saar-seva packing job; each clip's link goes to the
+  **outgoing** Delivery Order's chatter. Several clips per order is normal.
+- **The DO rule:** an order is one-step (a single `outgoing` picking) or two-step (`internal`
+  PICK **+** `outgoing` OUT). The link ALWAYS goes to the **outgoing** one — the PICK is an
+  internal transfer, not the customer's delivery.
+- Posted at Stop time by resolving the OUT from `sale.order.picking_ids`; NOT from
+  `PackingJob.odoo_do_picking_id`, which is only filled at dispatch, long after packing.
+- **Packing benches are Odoo work centres**, same as repair benches — `cameras.yaml` needs no
+  new field, and multiple packing stations work.
+- saar-seva side: `routers/repaircam_pack.py` (`GET /pack/active`, `POST /pack/recordings`)
+  + `PackingRecording` model + packer Record/Stop in `warehouse.py`, on branch
+  `claude/packing-video-endpoints`. RepairCam side: `saarseva.py` + `trigger.py`.
+- Catalogue schema v2: `recordings.source` / `source_ref` say which integration a clip came
+  from, so link retries survive a restart.
+- Full plan: docs/PACKING-VIDEO-PLAN.md.
 - **Retention/archive:** nothing deletes or moves old clips. ~1.8 GB per bench-hour, so the
   SSD will fill and recording will stop mid-repair. Next real build item.
 

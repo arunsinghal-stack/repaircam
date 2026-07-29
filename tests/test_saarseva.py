@@ -144,7 +144,7 @@ def test_fetch_active_returns_operations(config):
 
     assert len(operations) == 1
     assert operations[0].labels().mo_name == "WH/MO/7"
-    assert operations[0].key == "log:abc"
+    assert operations[0].key == "repair:abc"
 
 
 def test_no_bench_filter_when_none_given():

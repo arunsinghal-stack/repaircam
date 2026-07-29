@@ -22,7 +22,13 @@ from dataclasses import dataclass, field
 from . import config as camera_config
 from .catalogue import Catalogue, Recording
 from .recorder import RecorderError, RecorderPool, State
-from .saarseva import ActiveOperation, SaarSevaClient, SaarSevaConfig, SaarSevaError
+from .saarseva import (
+    KIND_PACKING,
+    ActiveOperation,
+    SaarSevaClient,
+    SaarSevaConfig,
+    SaarSevaError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -132,7 +138,7 @@ class Trigger:
         """Poll once and make the recorders match. Never raises."""
         result = TickResult()
         try:
-            operations = self.client.fetch_active(self.workcenter_ids)
+            operations = self._fetch_all()
         except SaarSevaError as exc:
             # Crucially, do not touch any recorder. A failed poll must never be
             # read as "nothing is running" — that would end every recording in
@@ -159,6 +165,26 @@ class Trigger:
             log.info("trigger: %s", result.summary())
         return result
 
+    def _fetch_all(self) -> list[ActiveOperation]:
+        """What saar-seva says is being recorded, across both integrations.
+
+        Repair benches and packing benches are both Odoo work centres, so they
+        share one id space and one camera map. A failure in either poll raises
+        — a partial picture must never be mistaken for "nothing is running",
+        which would end every recording in the shop.
+        """
+        benches = self.workcenter_ids
+        operations = list(self.client.fetch_active(benches))
+        try:
+            operations += list(self.client.fetch_active_packing(benches))
+        except SaarSevaError as exc:
+            # A saar-seva without the packing endpoints answers 404. That is a
+            # deployment state, not a fault: keep the repair trigger working.
+            if "does not exist on the server yet" not in str(exc):
+                raise
+            log.debug("packing endpoints not deployed yet: %s", exc)
+        return operations
+
     def _by_bench(self, operations: list[ActiveOperation]) -> dict[str, ActiveOperation]:
         """One operation per bench, keyed by bench code.
 
@@ -172,10 +198,11 @@ class Trigger:
             if work_center is None:
                 continue
             if work_center in wanted:
-                # Two technicians clocked onto one bench. One camera cannot
-                # record two jobs, so keep the first and say so.
+                # Two things claiming one bench — two technicians, or a repair
+                # timer and a packing record on the same work centre. One
+                # camera cannot film two jobs, so keep the first and say so.
                 log.warning(
-                    "saar-seva reports two operations on %s; recording only %s",
+                    "saar-seva reports two sessions on %s; recording only %s",
                     work_center,
                     wanted[work_center].key,
                 )
@@ -237,8 +264,12 @@ class Trigger:
             result.skipped.append(f"{work_center} ({exc})")
             return
 
-        if operation and recording.id is not None:
-            self._operations[recording.id] = operation
+        if recording.id is not None:
+            if operation:
+                self._operations[recording.id] = operation
+                # Stored on the row, not just here, so a restart before the
+                # link is posted still knows where it belongs.
+                self.catalogue.set_source(recording.id, operation.kind, operation.source_ref)
         result.finished.append(work_center)
 
     # -- links --------------------------------------------------------------
@@ -255,9 +286,13 @@ class Trigger:
 
         for recording in self.catalogue.list_unposted(limit=10):
             try:
-                self.client.post_recording(
-                    recording, operation=self._operations.get(recording.id)
-                )
+                if recording.source == KIND_PACKING:
+                    # saar-seva works out which Delivery Order this belongs on.
+                    self.client.post_packing_recording(recording)
+                else:
+                    self.client.post_recording(
+                        recording, operation=self._operations.get(recording.id)
+                    )
             except SaarSevaError as exc:
                 log.warning("could not post the link for clip %s: %s", recording.id, exc)
                 return  # saar-seva is unhappy; stop hammering it until next tick

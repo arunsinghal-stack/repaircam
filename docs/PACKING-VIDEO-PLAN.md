@@ -3,7 +3,10 @@
 Record the packing of an order, and put the video's link on the Delivery Order's
 Odoo chatter. Same idea as the repair-bench recording (Phase 5), different job.
 
-**Nothing here is built yet.** This is the plan.
+**Both halves are built.** saar-seva's are in
+`arunsinghal-stack/saar-seva-app` branch `claude/packing-video-endpoints`;
+RepairCam's are in `saarseva.py` / `trigger.py`. Not yet run against a real
+camera or a real Odoo.
 
 ---
 
@@ -131,12 +134,18 @@ its API calls already exist.
 
 Small changes; the recorder itself is untouched.
 
-- **`cameras.yaml` gains `packing_station:`** alongside `odoo_workcenter_id`. A
-  camera can be a repair bench *or* a packing station.
-- **The trigger also polls `/pack/active`**, matching on station name instead of
-  work-centre id, and drives the same `Recorder.start()` / `.done()`.
-- **Sidecar gains packing labels** — order reference, DO name, packer — beside
-  the existing repair labels, so the dataset can tell the two kinds apart.
+- **`cameras.yaml` needs no new field.** Packing benches are Odoo work centres,
+  exactly like repair benches, so the existing `odoo_workcenter_id` covers both
+  and several packing stations work from day one.
+- **The trigger polls `/pack/active` as well as `/trc/active`** and merges them:
+  one bench map, one reconcile. A saar-seva without the packing endpoints
+  answers 404, which is treated as "not deployed yet" so repair recording
+  carries on; any other packing failure still aborts the tick, because a
+  partial picture must never read as "nothing is running".
+- **The catalogue remembers the source.** `recordings.source` ('repair' /
+  'packing') and `source_ref` (saar-seva's own id) are stored on the row, so a
+  restart before the link is posted still knows which endpoint it belongs to.
+  Schema v2; existing databases are migrated with ALTER TABLE on open.
 
 Everything else — capture, catalogue, sidecars, the never-lose-footage rules,
 the link retry — is reused as-is.
