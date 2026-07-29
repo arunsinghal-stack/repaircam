@@ -62,7 +62,13 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Recovery + deploy (DONE, in repo):** `deploy/` installs the web UI as a systemd
   service; `repaircam/recovery.py` + `cli.py recover` re-file segments a restart left
   orphaned (listed on the status page). Note Phases 3 and 4 are undefined anywhere.
-- **Phase 5 (BOTH halves built, not yet run for real):** RepairCam side = `saarseva.py`
+- **Phase 5 (LIVE — end-to-end on 2026-07-29):** a technician pressed Start on saar-seva's
+  `/trc/time`, RepairCam began filming by itself, Stop ended the clip, and the link appeared
+  in the Odoo chatter. Three defects were found and fixed on that first run — all three are
+  in `docs/PHASE5-CONTRACT.md` under "Retries, and when RepairCam gives up"; the worst was
+  that one un-postable clip at the head of an oldest-first queue silently stopped every later
+  clip's link, with nothing in the UI saying so.
+  RepairCam side = `saarseva.py`
   (polling client, stdlib urllib) + `trigger.py` + `cli.py trigger`. saar-seva side =
   `GET /trc/active` + `POST /trc/recordings` in `backend/app/routers/trc.py` of
   `arunsinghal-stack/saar-seva-app` — MERGED to its `staging` branch in PR #461
