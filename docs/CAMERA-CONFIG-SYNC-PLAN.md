@@ -56,30 +56,32 @@ bytes on a call that was happening anyway.
 
 ## What is central, and what stays local
 
-| | Where | Why |
-|---|---|---|
-| work centre id, bench name, IP, port, stream paths, audio, enabled | **saar-seva** | not secret; a private LAN address means nothing outside the shop |
-| **camera password** | **recorder only** | see below |
+**Everything is central, including passwords** — the owner's decision, made
+after the trade-off below was raised. `cameras.yaml` becomes a fully generated
+file; nothing has to be edited on the recorder at all.
 
-**Passwords do not go to the cloud.** saar-seva's database holds no secrets
-today — every one (Odoo API key, PIN pepper, admin password, RepairCam key) is
-an environment variable, not a table. Putting VIGI passwords in `SystemSetting`
-would be the first, and would move the keys to the shop's cameras onto a host on
-the internet. The project's own rule is that cameras are never internet-exposed.
+### The trade-off, and how it is reduced
 
-So `cameras.yaml` becomes a **generated file**, and the passwords are merged in
-from a local `camera-secrets.yaml` that never leaves the recorder:
+saar-seva's database holds **no secrets today** — Odoo API key, PIN pepper,
+admin password, RepairCam key, all environment variables, none in a table.
+Camera passwords will be the first. That puts the keys to the shop's cameras on
+a host on the internet, where a database dump or a compromised admin login would
+expose them.
 
-```yaml
-# repaircam/camera-secrets.yaml   (gitignored, never synced)
-secrets:
-  12: "the VIGI password for work centre 12"
-  31: "the VIGI password for the packing bench"
-```
+Two things reduce it, and both should be built:
 
-A bench added centrally arrives with no password. `status` then says plainly:
-*"WC3 has no password yet — add it on the recorder."* One local step per camera,
-once.
+1. **Encrypt at rest.** Passwords are stored encrypted in `SystemSetting`, with
+   the key held in a Render environment variable (`REPAIRCAM_CONFIG_KEY`), never
+   in the database. A DB dump alone then yields nothing, and saar-seva's "no
+   plaintext secrets in tables" property is preserved.
+2. **Write-only in the admin UI.** The panel shows `••••••••` and a "change"
+   box; it never renders an existing password back to the browser. An admin can
+   set one, not read one.
+
+The blast radius is also bounded by what a camera password actually is: it opens
+an RTSP stream **on the shop LAN only**. It is not a customer credential and it
+does not reach Odoo or any money. That is what makes this a reasonable call —
+but it is a deliberate one, not a default.
 
 ---
 
@@ -186,16 +188,15 @@ service change what the recorder points at:
 
 ---
 
-## Open questions
+## Decided
 
-1. **Who may edit it?** Admin panel only, or should a TRC manager be able to?
-   The Team tab is manager-level; cameras feel more like admin.
-2. **Removing a bench.** Delete the row, or just `enabled: false`? Disabling is
-   safer — the clips already recorded still reference the work centre.
-3. **Passwords, still.** If you would rather have *everything* central including
-   passwords, say so and I will build that instead — but it is the first secret
-   in that database and it puts camera credentials on the internet, so I would
-   want that to be a deliberate decision rather than a default.
+1. **Admin panel only.** TRC managers who need it are given admin access;
+   the camera list is not exposed at manager level.
+2. **Removing a bench sets `enabled: false`**, it does not delete the row. Clips
+   already recorded still reference that work centre, and a deleted row would
+   orphan them.
+3. **Passwords are central**, encrypted at rest and write-only in the UI — see
+   above.
 
 ---
 

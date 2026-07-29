@@ -339,7 +339,36 @@ than risk:
 The `/status` page lists orphans, because they appear in no other page — they are not in
 the library, having never become clips.
 
-## 11. Open items
+## 11. Recording indicator — showing *capture*, not *intent*
+
+The red dot on the bench page currently means "we asked ffmpeg to start". It should
+mean "frames are being written".
+
+The gap is real: after `Popen` returns, ffmpeg still has to resolve the host, open the
+RTSP connection, authenticate, negotiate the stream, wait for a keyframe, and write
+the first bytes of the MP4. Until then nothing is recorded, but the dot pulses and the
+timer counts.
+
+Detecting the true start is simple and backend-agnostic: **the destination file gains
+its first bytes**. Poll `dest.stat().st_size`; once it is non-zero, capture is real.
+It needs no ffmpeg log parsing and works for any future backend that writes a file.
+
+What it changes:
+
+- `ActiveCapture` gains a `capturing` property; `RtspCapture` implements it by
+  watching the file, latching true once so it never flickers.
+- `Recorder.status()` reports `capturing` alongside `recording`.
+- The bench page shows **amber "connecting to camera…"** between the button press and
+  the first byte, and only then the **blinking red**. The dashboard does the same.
+- If capture has not begun within a few seconds, say so — "camera not responding" —
+  rather than leave a technician trusting a light that means nothing yet.
+- The elapsed timer should count from the first byte, not the button press, so the
+  number on screen matches the clip that comes out.
+
+The same signal is what any *physical* indicator should be wired to — a lamp driven by
+"we pressed a button" would repeat the same lie in hardware.
+
+## 12. Open items
 
 - **Focus test not yet passed** (Phase 0 gate): a real phone at 60–80 cm must be sharp
   enough to read screws. `python3 -m repaircam.cli snapshot WC2`, then look at the image.
