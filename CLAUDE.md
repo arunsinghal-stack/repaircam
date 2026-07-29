@@ -148,7 +148,14 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   the guard applies without it). **`archive_dir` is unset today, so this laptop still holds
   the only copy of every clip.**
 
-## Going live
+## Going live (recorder cut over to PRODUCTION 2026-07-29; `preflight` all green)
+- Three benches configured — WC1, WC2, WC13 — all with an `odoo_workcenter_id`, all
+  answering. `base_url` is `https://saar-seva-api.onrender.com`; production has both
+  `REPAIRCAM_API_KEY` and the code. Disk back up to ~204 GB (~113 bench-hours).
+- **Outstanding:** the camera password `Admin@321` was printed by a pre-flight run before
+  `redact_text()` existed, so it is in a terminal scrollback and a chat log — **rotate it
+  on all three cameras.** Also still true: no `archive_dir`, so this box holds the only
+  copy; and the power-cut behaviour has never been tested.
 - **docs/GO-LIVE.md** is the runbook. `cli preflight` checks the whole thing from the
   recorder's side and says what to do about anything it finds — run it before believing
   the shop is ready.
