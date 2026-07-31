@@ -146,7 +146,10 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   the database row is not evidence. A background worker does it every 10 min; `cli storage
   [--archive] [--prune]` does it by hand. Config: `repaircam/storage.yaml` (optional —
   the guard applies without it). **`archive_dir` is unset today, so this laptop still holds
-  the only copy of every clip.**
+  the only copy of every clip.** Sizing and the decisions it waits on: docs/STORAGE-PLAN.md
+  — at 3 benches this is 22–43 GB/day, so the recorder's own disk holds 5–9 days and
+  `keep_days: 30` never fits it. Retention is by age only; there is **no "keep this clip"
+  flag**, and one must exist before `delete_after_archive` is ever turned on.
 
 ## Going live (recorder cut over to PRODUCTION 2026-07-29; `preflight` all green)
 - Three benches configured — WC1, WC2, WC13 — all with an `odoo_workcenter_id`, all
