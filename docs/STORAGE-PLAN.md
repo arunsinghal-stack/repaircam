@@ -80,12 +80,24 @@ The question that decides the number is not a storage question at all:
 retention window is that, plus a margin. A shop that warrants a screen for 90
 days cannot hold footage for 30 and expect it to be there when it is needed.
 
-Repair and packing can differ, and the catalogue already distinguishes them
-(`source` is `repair` or `packing`). A packing dispute — "the box was short an
-item" — surfaces within the delivery and return window, which is usually far
-shorter than a repair warranty. `prune` applies one `keep_days` to everything
-today; splitting it by source is a small change worth making if the two numbers
-turn out to be far apart.
+**Decided (2026-07-29): repair 30 days, packing 45 days.** Both configurable:
+
+```yaml
+storage:
+  keep_days: 30            # fallback, and clips started by hand
+  keep_days_by_source:
+    repair: 30
+    packing: 45
+```
+
+`prune` runs one pass per window, so each kind of footage expires on its own
+clock. A source not named there falls back to `keep_days` — which is also what a
+clip somebody started by hand in RepairCam gets, since it belongs to no
+integration and no integration's window fits it.
+
+Sizing at those numbers, three benches: repair footage settles at roughly
+**30 days' worth** on the archive and packing at 45, so the archive stops
+growing rather than climbing for ever.
 
 ### 2. Where does the second copy live?
 
@@ -138,8 +150,10 @@ it should land **before** `delete_after_archive: true`, not after.
    second home and nothing is deleted. Watch it for a few days; open the archive
    and play a clip from it.
 5. **Add the "keep this one" flag** before deletion is ever enabled.
-6. **Then set `keep_days` (3–7) and `delete_after_archive: true`**, and watch
-   the first prune closely.
+6. **Then set the recorder's own `keep_days` (3–7) and
+   `delete_after_archive: true`**, and watch the first prune closely. The
+   per-source windows above govern the archive's size; the recorder itself can
+   only hold days, whatever they say.
 
 Steps 1 and 2 cost nothing and unblock everything else. Step 4 is the one that
 ends the real exposure today: **right now every clip the shop has exists on one

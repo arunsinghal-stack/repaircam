@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -49,8 +49,15 @@ DEFAULT_MIN_FREE_GB = 20.0
 #: Say something is wrong below this, while still recording.
 DEFAULT_WARN_FREE_GB = 50.0
 
-#: How long a clip stays on the recorder once it is safely archived.
+#: How long a clip stays on the recorder once it is safely archived, when
+#: nothing more specific is set for what it is footage of.
 DEFAULT_KEEP_DAYS = 30
+
+#: Retention differs by what the footage is FOR, so it differs by source.
+#: A repair is disputable for as long as it is under warranty; a packing
+#: complaint — "the box was short an item" — arrives inside the delivery and
+#: return window instead. One number for both would be wrong twice.
+DEFAULT_KEEP_DAYS_BY_SOURCE = {"repair": 30, "packing": 45}
 
 
 class StorageError(Exception):
@@ -73,7 +80,12 @@ class StorageConfig:
     #: Where the second copy goes. Empty means archiving is off — and with it,
     #: deletion, because nothing may be deleted that was never copied.
     archive_dir: str = ""
+    #: Fallback, and what a clip started by hand in RepairCam gets — it belongs
+    #: to no integration, so no integration's window applies to it.
     keep_days: int = DEFAULT_KEEP_DAYS
+    #: Per-source overrides: {"repair": 30, "packing": 45}. A source not named
+    #: here falls back to keep_days.
+    keep_days_by_source: dict = field(default_factory=lambda: dict(DEFAULT_KEEP_DAYS_BY_SOURCE))
     #: Off by default even when a destination is set. Deleting footage is the
     #: one thing here that cannot be undone, so it is opted into explicitly.
     delete_after_archive: bool = False
@@ -82,12 +94,17 @@ class StorageConfig:
     def archive_path(self) -> Path | None:
         return Path(self.archive_dir).expanduser() if self.archive_dir else None
 
+    def keep_days_for(self, source: str) -> int:
+        """How long this kind of footage stays on the recorder."""
+        return int(self.keep_days_by_source.get(source or "", self.keep_days))
+
     def describe(self) -> dict:
         return {
             "min_free_gb": self.min_free_gb,
             "warn_free_gb": self.warn_free_gb,
             "archive_dir": self.archive_dir or "not set",
             "keep_days": self.keep_days,
+            "keep_days_by_source": dict(self.keep_days_by_source),
             "delete_after_archive": self.delete_after_archive,
         }
 
@@ -119,12 +136,24 @@ def load_config(path: Path | None = None) -> StorageConfig:
     if not isinstance(values, dict):
         return StorageConfig()
 
+    by_source = dict(DEFAULT_KEEP_DAYS_BY_SOURCE)
+    raw_by_source = values.get("keep_days_by_source")
+    if isinstance(raw_by_source, dict):
+        for source, days in raw_by_source.items():
+            try:
+                by_source[str(source)] = int(days)
+            except (TypeError, ValueError) as exc:
+                raise StorageError(
+                    f"{path}: keep_days_by_source['{source}'] is not a number of days"
+                ) from exc
+
     try:
         return StorageConfig(
             min_free_gb=float(values.get("min_free_gb", DEFAULT_MIN_FREE_GB)),
             warn_free_gb=float(values.get("warn_free_gb", DEFAULT_WARN_FREE_GB)),
             archive_dir=str(values.get("archive_dir") or "").strip(),
             keep_days=int(values.get("keep_days", DEFAULT_KEEP_DAYS)),
+            keep_days_by_source=by_source,
             delete_after_archive=bool(values.get("delete_after_archive", False)),
         )
     except (TypeError, ValueError) as exc:
@@ -338,11 +367,17 @@ def prune(
 ) -> PruneResult:
     """Delete local clips that are old AND verifiably archived.
 
+    How long is "old" depends on what the footage is of: a repair stays as long
+    as it can be disputed under warranty, a packing clip only as long as a
+    delivery complaint can arrive. ``keep_days_by_source`` holds the difference
+    and ``keep_days`` covers anything not named — including a clip somebody
+    started by hand, which belongs to no integration at all.
+
     Every condition here is a refusal, because this is the only operation in
     RepairCam that destroys footage:
 
     - archiving must be configured, and deletion explicitly enabled;
-    - the clip must be older than ``keep_days``;
+    - the clip must be older than its own source's window;
     - the catalogue must say it was archived;
     - **and the archived file must still be there, at the right size, checked
       now** — not trusted from a database row written weeks ago. A NAS that was
@@ -363,10 +398,27 @@ def prune(
             [], skipped_reason="deletion is off — set delete_after_archive in storage.yaml"
         )
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=cfg.keep_days)
     result = PruneResult([])
+    now = datetime.now(timezone.utc)
 
-    for recording in catalogue.list_archived_before(cutoff.isoformat()):
+    def cutoff(days: int) -> str:
+        return (now - timedelta(days=days)).isoformat()
+
+    # One pass per retention window. Named sources first, then everything else
+    # — including clips started by hand, which belong to no integration and so
+    # get the default rather than any integration's window.
+    named = sorted(cfg.keep_days_by_source)
+    groups: list[dict] = [
+        {"cutoff_iso": cutoff(cfg.keep_days_for(source)), "source": source}
+        for source in named
+    ]
+    groups.append({"cutoff_iso": cutoff(cfg.keep_days), "exclude_sources": named or None})
+
+    candidates: list[Recording] = []
+    for group in groups:
+        candidates.extend(catalogue.list_archived_before(**group))
+
+    for recording in candidates:
         source = root / recording.path
         if not source.exists():
             continue  # already gone; the row still says where it went

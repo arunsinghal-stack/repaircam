@@ -459,15 +459,38 @@ class Catalogue:
             ).fetchall()
         return [self._to_recording(row) for row in rows]
 
-    def list_archived_before(self, cutoff_iso: str, limit: int = 200) -> list[Recording]:
-        """Archived clips whose recording started before ``cutoff_iso``."""
+    def list_archived_before(
+        self,
+        cutoff_iso: str,
+        *,
+        source: str | None = None,
+        exclude_sources: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[Recording]:
+        """Archived clips whose recording started before ``cutoff_iso``.
+
+        ``source`` narrows to one integration, ``exclude_sources`` to everything
+        else. Retention differs by what the footage is of — a packing dispute
+        and a repair warranty are not the same length — so the caller asks for
+        one group at a time rather than applying one age to everything.
+        """
+        sql = [
+            "SELECT * FROM recordings WHERE archived_at != '' AND local_deleted = 0",
+            "  AND started_at < ?",
+        ]
+        params: list = [cutoff_iso]
+        if source is not None:
+            sql.append("  AND source = ?")
+            params.append(source)
+        if exclude_sources:
+            marks = ",".join("?" for _ in exclude_sources)
+            sql.append(f"  AND source NOT IN ({marks})")
+            params.extend(exclude_sources)
+        sql.append(" ORDER BY id ASC LIMIT ?")
+        params.append(limit)
+
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM recordings WHERE archived_at != '' AND local_deleted = 0"
-                "   AND started_at < ?"
-                " ORDER BY id ASC LIMIT ?",
-                (cutoff_iso, limit),
-            ).fetchall()
+            rows = conn.execute("\n".join(sql), params).fetchall()
         return [self._to_recording(row) for row in rows]
 
     def mark_archived(self, recording_id: int, archive_path: str) -> None:

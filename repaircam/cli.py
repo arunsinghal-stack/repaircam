@@ -315,9 +315,16 @@ def cmd_storage(args: argparse.Namespace) -> int:
           f"{info['unarchived']} without")
     if info["unarchived"] and cfg.archive_dir:
         print( "            Run:  python3 -m repaircam.cli storage --archive")
+    windows = ", ".join(
+        f"{source or 'by hand'} {days}d"
+        for source, days in sorted(cfg.keep_days_by_source.items())
+    )
+    windows = f"{windows}, everything else {cfg.keep_days}d" if windows else f"{cfg.keep_days}d"
     if cfg.archive_dir and not cfg.delete_after_archive:
-        print(f"     deleting  off — clips are kept after archiving "
-              f"(keep_days={cfg.keep_days} applies once it is on)")
+        print(f"     deleting  off — clips are kept after archiving")
+        print(f"               once on: {windows}")
+    elif cfg.archive_dir:
+        print(f"     deleting  ON — {windows}")
     return 0
 
 

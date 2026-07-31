@@ -27,7 +27,22 @@ storage:
 
   # How long a clip stays on the recorder AFTER it has been copied and the copy
   # verified. Clips that were never archived are never removed, whatever age.
+  #
+  # This is the fallback, and what a recording started by hand in RepairCam
+  # gets — it belongs to no integration, so no integration's window fits it.
   keep_days: 30
+
+  # Retention really depends on what the footage is OF, so it is set per source.
+  # A repair can be argued about for as long as it is under warranty; a packing
+  # complaint — "the box was short an item" — arrives inside the delivery and
+  # return window instead. One number would be wrong for both.
+  #
+  # Set to this shop's own windows. Getting these WRONG in the short direction
+  # cannot be undone: the footage is gone, and it is gone for exactly the jobs
+  # old enough that somebody is now arguing about them.
+  keep_days_by_source:
+    repair: 30
+    packing: 45
 
   # Deleting footage is the one thing here that cannot be undone, so it is off
   # until you say otherwise. With this false, clips are copied to the archive

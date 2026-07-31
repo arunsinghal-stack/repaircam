@@ -141,7 +141,8 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Retention/archive (Phase 3, BUILT — not yet configured in the shop):** `storage.py`.
   Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
   is let through. Clips are copied to `archive_dir` and verified there; only then, and only
-  with `delete_after_archive: true`, are local copies older than `keep_days` removed — and
+  with `delete_after_archive: true`, are local copies older than `keep_days` removed (per source: **repair 30 days, packing 45**, set in
+  `keep_days_by_source`; anything unnamed and hand-started clips use `keep_days`) — and
   the archived file is re-checked for existence and size at the moment of deletion, because
   the database row is not evidence. A background worker does it every 10 min; `cli storage
   [--archive] [--prune]` does it by hand. Config: `repaircam/storage.yaml` (optional —

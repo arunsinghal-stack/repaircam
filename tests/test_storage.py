@@ -303,3 +303,95 @@ def test_the_config_is_read(tmp_path):
     assert cfg.archive_dir == "/mnt/arch"
     assert cfg.keep_days == 3
     assert cfg.delete_after_archive is True
+
+
+# --------------------------------------------------------------------------
+# retention differs by what the footage is of
+# --------------------------------------------------------------------------
+
+
+def by_source_cfg(archive: Path) -> StorageConfig:
+    return StorageConfig(
+        archive_dir=str(archive),
+        keep_days=7,
+        keep_days_by_source={"repair": 30, "packing": 45},
+        delete_after_archive=True,
+    )
+
+
+def make_sourced(catalogue, data_root, *, name, days_old, source, ref="x"):
+    clip = make_clip(catalogue, data_root, name=name, days_old=days_old)
+    catalogue.set_source(clip.id, source, ref)
+    return catalogue.get(clip.id)
+
+
+def test_repair_and_packing_expire_on_their_own_clocks(catalogue, data_root, archive):
+    """A repair is disputable while it is under warranty; a packing complaint
+    arrives inside the delivery window. One number would be wrong twice."""
+    cfg = by_source_cfg(archive)
+    old_repair = make_sourced(catalogue, data_root, name="r-old.mp4", days_old=40, source="repair")
+    new_repair = make_sourced(catalogue, data_root, name="r-new.mp4", days_old=20, source="repair")
+    old_pack = make_sourced(catalogue, data_root, name="p-old.mp4", days_old=50, source="packing")
+    new_pack = make_sourced(catalogue, data_root, name="p-new.mp4", days_old=40, source="packing")
+    storage.archive_pending(catalogue, cfg, root=data_root, limit=99)
+
+    result = storage.prune(catalogue, cfg, root=data_root)
+
+    assert sorted(result.deleted) == sorted([old_repair.id, old_pack.id])
+    # 40 days is past a repair's 30 and inside a packing clip's 45.
+    assert not (data_root / old_repair.path).exists()
+    assert (data_root / new_repair.path).exists()
+    assert not (data_root / old_pack.path).exists()
+    assert (data_root / new_pack.path).exists()
+
+
+def test_a_hand_started_clip_uses_the_default(catalogue, data_root, archive):
+    """It belongs to no integration, so no integration's window applies."""
+    cfg = by_source_cfg(archive)  # default is 7 days
+    clip = make_clip(catalogue, data_root, name="byhand.mp4", days_old=10)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    result = storage.prune(catalogue, cfg, root=data_root)
+
+    assert result.deleted == [clip.id]
+
+
+def test_a_source_with_no_window_of_its_own_falls_back(catalogue, data_root, archive):
+    cfg = by_source_cfg(archive)
+    clip = make_sourced(catalogue, data_root, name="other.mp4", days_old=10, source="something")
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    assert storage.prune(catalogue, cfg, root=data_root).deleted == [clip.id]
+    assert cfg.keep_days_for("something") == 7
+
+
+def test_the_windows_are_read_from_the_file(tmp_path):
+    path = tmp_path / "storage.yaml"
+    path.write_text(
+        "storage:\n  keep_days: 14\n"
+        "  keep_days_by_source:\n    repair: 30\n    packing: 45\n"
+    )
+    cfg = storage.load_config(path)
+
+    assert cfg.keep_days_for("repair") == 30
+    assert cfg.keep_days_for("packing") == 45
+    assert cfg.keep_days_for("") == 14
+    assert cfg.keep_days_for("anything-else") == 14
+
+
+def test_only_the_named_sources_are_overridden(tmp_path):
+    """Setting one must not silently drop the other."""
+    path = tmp_path / "storage.yaml"
+    path.write_text("storage:\n  keep_days_by_source:\n    packing: 60\n")
+    cfg = storage.load_config(path)
+
+    assert cfg.keep_days_for("packing") == 60
+    assert cfg.keep_days_for("repair") == 30  # still the shipped default
+
+
+def test_a_window_that_is_not_a_number_is_refused(tmp_path):
+    path = tmp_path / "storage.yaml"
+    path.write_text("storage:\n  keep_days_by_source:\n    repair: soon\n")
+
+    with pytest.raises(storage.StorageError, match="not a number of days"):
+        storage.load_config(path)
