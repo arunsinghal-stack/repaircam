@@ -155,17 +155,18 @@ Three things are worth noticing about that shape:
   moment of deletion precisely because the row is not evidence.
 - **Nothing prunes the archive.** Only the recorder's own copy is ever removed.
 
-## Two gaps worth naming now
+## Two gaps — both now closed
 
 Retention today is purely by age. There is **no way to mark a clip "keep this
 one"** — the training example, the disputed repair, the one that becomes a
 dataset sample. Under `delete_after_archive`, an important clip ages out
 exactly like every other.
 
-That is fine while nothing is being deleted, which is the state today. It stops
-being fine the day retention is switched on. The fix is small — a flag on the
-catalogue row that `prune` refuses to delete, and a button in the library — and
-it should land **before** `delete_after_archive: true`, not after.
+**Built.** A `keep` column on the catalogue row and a **Keep this clip** button
+on the clip page. The exclusion lives in the SQL `prune` reads from, not in
+`prune` itself, so no future caller can forget it. The status page and
+`cli storage` count kept clips, because they are the part of the archive that
+only ever grows.
 
 ### 2. A pruned clip's Odoo link breaks
 
@@ -178,9 +179,13 @@ end — for footage that still exists, a few centimetres away on the archive dis
 Nobody would find that until they went looking for an old repair, which is the
 one moment retention exists to serve.
 
-The fix is as small as the last one: fall back to `archive_path` when the local
-file is gone, with the same guard applied to a second allowed root. Like the
-keep flag, it belongs **before** deletion is switched on.
+**Built.** `resolve_clip()` tries the recorder's own copy, then the archive.
+Both are checked against a permitted root — and the archived one against the
+archive configured *now*, so a path recorded when `archive_dir` pointed
+elsewhere is not something to start serving files from. The clip page says when
+it is playing from the archive, and when the archive is configured but
+unreadable it says *that* instead of "missing from disk", which would send
+somebody looking for footage that is fine on a disk that is merely unmounted.
 
 ---
 
@@ -196,8 +201,8 @@ keep flag, it belongs **before** deletion is switched on.
 4. **Set `archive_dir`**, leave `delete_after_archive: false`. Clips get a
    second home and nothing is deleted. Watch it for a few days; open the archive
    and play a clip from it.
-5. **Fix both gaps above** before deletion is ever enabled — the "keep this one"
-   flag, and serving a pruned clip from the archive so its Odoo link still works.
+5. ~~Fix both gaps above~~ — **done**. Keeping a clip, and serving a pruned one
+   from the archive, both work.
 6. **Then set the recorder's own `keep_days` (3–7) and
    `delete_after_archive: true`**, and watch the first prune closely. The
    per-source windows above govern the archive's size; the recorder itself can

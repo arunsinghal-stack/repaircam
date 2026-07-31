@@ -223,3 +223,85 @@ def test_status_page_shows_links_that_never_reached_odoo(client, app):
     assert b"Links that never reached Odoo" in page
     assert b"WH/MO/42" in page
     assert b"HTTP 404" in page
+
+
+# --------------------------------------------------------------------------
+# a clip that has aged off this machine
+# --------------------------------------------------------------------------
+
+
+def _archived_clip(app, tmp_path, monkeypatch, *, still_there=True):
+    """A clip whose local copy has been pruned, with a copy on the archive."""
+    from repaircam.catalogue import JobLabels, Recording, utcnow
+
+    archive = tmp_path / "archive"
+    (archive / "recordings").mkdir(parents=True)
+    store = tmp_path / "storage.yaml"
+    store.write_text(f"storage:\n  archive_dir: {archive}\n")
+    monkeypatch.setenv("REPAIRCAM_STORAGE", str(store))
+
+    copied = archive / "recordings" / "old.mp4"
+    if still_there:
+        copied.write_bytes(b"archived-video")
+
+    cat = app.extensions["catalogue"]
+    clip = cat.add(Recording(
+        work_center="WC2",
+        path="recordings/old.mp4",          # deliberately not on the local disk
+        started_at=utcnow(),
+        labels=JobLabels(mo_name="WH/MO/42"),
+    ))
+    cat.mark_archived(clip.id, str(copied))
+    return clip
+
+
+def test_a_pruned_clip_still_plays_from_the_archive(client, app, tmp_path, monkeypatch):
+    """Otherwise the first prune turns every older link in the Odoo chatter into
+    a dead end, for footage sitting on the archive disk."""
+    clip = _archived_clip(app, tmp_path, monkeypatch)
+
+    response = client.get(f"/clip/{clip.id}/video")
+
+    assert response.status_code == 200
+    assert response.data == b"archived-video"
+
+
+def test_the_page_says_it_is_playing_from_the_archive(client, app, tmp_path, monkeypatch):
+    clip = _archived_clip(app, tmp_path, monkeypatch)
+    assert b"Playing from the archive" in client.get(f"/clip/{clip.id}").data
+
+
+def test_an_unreachable_archive_says_so_rather_than_just_404(client, app, tmp_path, monkeypatch):
+    """'Missing from disk' would send somebody looking for footage that is fine,
+    on a disk that is merely unmounted."""
+    clip = _archived_clip(app, tmp_path, monkeypatch, still_there=False)
+
+    page = client.get(f"/clip/{clip.id}").data
+
+    assert b"is not readable right now" in page
+    assert b"mounted" in page
+
+
+def test_a_clip_outside_the_archive_is_refused(client, app, tmp_path, monkeypatch):
+    """A hand-edited archive_path must not talk the server into serving
+    anything it likes."""
+    clip = _archived_clip(app, tmp_path, monkeypatch)
+    outside = tmp_path / "elsewhere.mp4"
+    outside.write_bytes(b"not yours")
+    app.extensions["catalogue"].mark_archived(clip.id, str(outside))
+
+    assert client.get(f"/clip/{clip.id}/video").status_code == 404
+
+
+def test_keeping_a_clip_from_the_page(client, app):
+    from repaircam.catalogue import JobLabels, Recording, utcnow
+
+    cat = app.extensions["catalogue"]
+    clip = cat.add(Recording(work_center="WC2", path="recordings/a.mp4",
+                             started_at=utcnow(), labels=JobLabels(mo_name="WH/MO/1")))
+
+    client.post(f"/clip/{clip.id}/keep", data={"keep": "1"}, follow_redirects=True)
+    assert cat.get(clip.id).keep == 1
+
+    client.post(f"/clip/{clip.id}/keep", data={"keep": "0"}, follow_redirects=True)
+    assert cat.get(clip.id).keep == 0

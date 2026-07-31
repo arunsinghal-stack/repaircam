@@ -472,6 +472,9 @@ def status(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None)
         "archive_missing": bool(destination and not destination.exists()),
         "unarchived": catalogue.count_unarchived(),
         "archived": catalogue.count_archived(),
+        # Kept clips never expire, so they are the part of the archive that only
+        # ever grows. Worth watching, not hiding.
+        "kept": catalogue.count_kept(),
     }
 
 

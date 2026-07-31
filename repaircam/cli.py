@@ -312,7 +312,7 @@ def cmd_storage(args: argparse.Namespace) -> int:
         print(f"  {OK} archive   {cfg.archive_dir}")
 
     print(f"     clips     {info['archived']} with a second copy, "
-          f"{info['unarchived']} without")
+          f"{info['unarchived']} without, {info['kept']} marked keep")
     if info["unarchived"] and cfg.archive_dir:
         print( "            Run:  python3 -m repaircam.cli storage --archive")
     windows = ", ".join(

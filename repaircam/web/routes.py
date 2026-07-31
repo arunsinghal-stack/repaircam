@@ -57,22 +57,54 @@ def labels_from_form(form) -> JobLabels:
     )
 
 
-def clip_path(recording) -> Path:
-    """Resolve a catalogue row to a file, refusing anything outside the data dir.
+def _under(path: Path, root: Path) -> bool:
+    """Is ``path`` inside ``root``?
 
-    Paths in the database are relative, but a corrupted or hand-edited row must
-    not be able to talk the server into serving ``/etc/passwd``.
+    A corrupted or hand-edited row must not be able to talk the server into
+    serving /etc/passwd. Path.is_relative_to() would read better but is Python
+    3.9+, and the shop recorder runs 3.8 — relative_to() raising ValueError is
+    the same test and works everywhere.
+    """
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_clip(recording) -> Path | None:
+    """Where this clip can actually be read from, or None if nowhere.
+
+    Two places, in order. The recorder's own copy, and — once retention has
+    removed that — the archive. Without the second, the first prune would turn
+    every older link in the Odoo chatter into a dead end, for footage still
+    sitting on the archive disk. Nobody would find that until they went looking
+    for an old repair, which is the one moment retention exists to serve.
+
+    Both are checked against a permitted root, and the archive one against the
+    archive configured *now*: a path recorded when archive_dir pointed somewhere
+    else is not something to start serving files from.
     """
     root = config.data_dir()
-    path = (root / recording.path).resolve()
-    try:
-        # Path.is_relative_to() would read better but is Python 3.9+, and the
-        # shop recorder runs 3.8. relative_to() raising ValueError is the same
-        # test and works everywhere.
-        path.relative_to(root)
-    except ValueError:
+    local = (root / recording.path).resolve()
+    if not _under(local, root):
         abort(400, "recording path is outside the data directory")
-    if not path.exists():
+    if local.exists():
+        return local
+
+    archived = getattr(recording, "archive_path", "")
+    if archived:
+        allowed = storage.load_config().archive_path
+        candidate = Path(archived).resolve()
+        if allowed and _under(candidate, allowed.resolve()) and candidate.exists():
+            return candidate
+    return None
+
+
+def clip_path(recording) -> Path:
+    """As resolve_clip, but 404s rather than returning None."""
+    path = resolve_clip(recording)
+    if path is None:
         abort(404, "the video file for this recording is missing from disk")
     return path
 
@@ -267,12 +299,16 @@ def clip(recording_id: int):
     recording = catalogue().get(recording_id)
     if recording is None:
         abort(404)
-    path = config.data_dir() / recording.path
+    local = config.data_dir() / recording.path
+    found = resolve_clip(recording)
     return render_template(
         "clip.html",
         recording=recording,
-        exists=path.exists(),
-        sidecar=read_sidecar(path),
+        exists=found is not None,
+        # Playing from the archive is worth saying: it means the clip has aged
+        # off this machine and is being read from the other disk.
+        from_archive=found is not None and found != local,
+        sidecar=read_sidecar(local if local.exists() else (found or local)),
     )
 
 
@@ -313,6 +349,30 @@ def clip_labels(recording_id: int):
     catalogue().update_labels(recording_id, labels_from_form(request.form))
     catalogue().log_event("relabel", detail=f"clip {recording_id}", recording_id=recording_id)
     flash("Job details updated.", "ok")
+    return redirect(url_for("repaircam.clip", recording_id=recording_id))
+
+
+@bp.post("/clip/<int:recording_id>/keep")
+def clip_keep(recording_id: int):
+    """Mark a clip as one to keep, or let it expire by age again.
+
+    Retention is by age, and age knows nothing about which clips matter. The
+    training example and the disputed repair are exactly the ones somebody will
+    look for long after the routine ones have gone.
+    """
+    recording = catalogue().get(recording_id)
+    if recording is None:
+        abort(404)
+    keep = request.form.get("keep") == "1"
+    catalogue().set_keep(recording_id, keep)
+    catalogue().log_event(
+        "keep" if keep else "unkeep", detail=f"clip {recording_id}", recording_id=recording_id
+    )
+    flash(
+        "Kept — this clip will not be deleted to make room." if keep
+        else "No longer kept — this clip expires with the others.",
+        "ok",
+    )
     return redirect(url_for("repaircam.clip", recording_id=recording_id))
 
 

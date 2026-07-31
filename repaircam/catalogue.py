@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS recordings (
     -- Set when the local file has been removed. The row stays: it is the only
     -- record of where the footage went.
     local_deleted INTEGER DEFAULT 0,
+    -- "Keep this one." A training example, a disputed repair, a dataset sample.
+    -- Retention is by age, and age knows nothing about which clips matter, so
+    -- without this the important ones expire exactly like the routine ones.
+    keep          INTEGER DEFAULT 0,
     -- Which integration asked for this clip: '' (started by hand), 'repair'
     -- or 'packing'. source_ref is that system's own id for the session.
     -- Kept in the database, not just in memory, so a clip whose link has not
@@ -145,6 +149,8 @@ class Recording:
     archived_at: str = ""
     archive_path: str = ""
     local_deleted: int = 0
+    #: Never delete this clip locally, whatever its age.
+    keep: int = 0
     created_at: str = field(default_factory=utcnow)
     labels: JobLabels = field(default_factory=JobLabels)
 
@@ -206,6 +212,7 @@ class Catalogue:
                 ("archived_at", "ALTER TABLE recordings ADD COLUMN archived_at TEXT DEFAULT ''"),
                 ("archive_path", "ALTER TABLE recordings ADD COLUMN archive_path TEXT DEFAULT ''"),
                 ("local_deleted", "ALTER TABLE recordings ADD COLUMN local_deleted INTEGER DEFAULT 0"),
+                ("keep", "ALTER TABLE recordings ADD COLUMN keep INTEGER DEFAULT 0"),
             ):
                 if column not in existing:
                     conn.execute(ddl)
@@ -236,6 +243,7 @@ class Catalogue:
             archived_at=(row["archived_at"] if "archived_at" in row.keys() else "") or "",
             archive_path=(row["archive_path"] if "archive_path" in row.keys() else "") or "",
             local_deleted=int(row["local_deleted"] if "local_deleted" in row.keys() else 0) or 0,
+            keep=int(row["keep"] if "keep" in row.keys() else 0) or 0,
             created_at=row["created_at"],
             labels=JobLabels(
                 mo_name=row["mo_name"],
@@ -475,7 +483,11 @@ class Catalogue:
         one group at a time rather than applying one age to everything.
         """
         sql = [
-            "SELECT * FROM recordings WHERE archived_at != '' AND local_deleted = 0",
+            # keep = 0 is part of the query, not the caller's job: a clip
+            # somebody marked worth keeping must not depend on every future
+            # caller remembering to filter it out.
+            "SELECT * FROM recordings",
+            " WHERE archived_at != '' AND local_deleted = 0 AND keep = 0",
             "  AND started_at < ?",
         ]
         params: list = [cutoff_iso]
@@ -499,6 +511,19 @@ class Catalogue:
                 "UPDATE recordings SET archived_at=?, archive_path=? WHERE id=?",
                 (utcnow(), archive_path, recording_id),
             )
+
+    def set_keep(self, recording_id: int, keep: bool = True) -> None:
+        """Mark a clip as one to keep, or let it go back to expiring by age."""
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET keep=? WHERE id=?", (1 if keep else 0, recording_id)
+            )
+
+    def count_kept(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) AS n FROM recordings WHERE keep = 1"
+            ).fetchone()["n"])
 
     def mark_local_deleted(self, recording_id: int) -> None:
         """The footage is gone from this disk, not from the world."""

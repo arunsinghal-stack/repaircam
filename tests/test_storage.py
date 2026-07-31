@@ -395,3 +395,46 @@ def test_a_window_that_is_not_a_number_is_refused(tmp_path):
 
     with pytest.raises(storage.StorageError, match="not a number of days"):
         storage.load_config(path)
+
+
+# --------------------------------------------------------------------------
+# "keep this one" — age knows nothing about which clips matter
+# --------------------------------------------------------------------------
+
+
+def test_a_kept_clip_is_never_deleted(catalogue, data_root, cfg):
+    """The training example and the disputed repair are exactly the clips
+    somebody looks for long after the routine ones have gone."""
+    clip = make_clip(catalogue, data_root, days_old=999)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+    catalogue.set_keep(clip.id)
+
+    result = storage.prune(catalogue, cfg, root=data_root)
+
+    assert result.deleted == []
+    assert (data_root / clip.path).exists()
+
+
+def test_keeping_can_be_undone(catalogue, data_root, cfg):
+    clip = make_clip(catalogue, data_root, days_old=999)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+    catalogue.set_keep(clip.id)
+    storage.prune(catalogue, cfg, root=data_root)
+
+    catalogue.set_keep(clip.id, False)
+    result = storage.prune(catalogue, cfg, root=data_root)
+
+    assert result.deleted == [clip.id]
+
+
+def test_keeping_one_does_not_spare_the_others(catalogue, data_root, cfg):
+    kept = make_clip(catalogue, data_root, name="kept.mp4", days_old=999)
+    ordinary = make_clip(catalogue, data_root, name="ordinary.mp4", days_old=999)
+    storage.archive_pending(catalogue, cfg, root=data_root, limit=99)
+    catalogue.set_keep(kept.id)
+
+    result = storage.prune(catalogue, cfg, root=data_root)
+
+    assert result.deleted == [ordinary.id]
+    assert (data_root / kept.path).exists()
+    assert not (data_root / ordinary.path).exists()

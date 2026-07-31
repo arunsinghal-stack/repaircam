@@ -43,6 +43,7 @@
     {% else %}
       <code>{{ store.config.archive_dir }}</code>
       <div class="muted small">
+        {{ store.kept }} marked <b>keep</b> (never deleted to make room).<br>
         {{ store.archived }} clip{{ '' if store.archived == 1 else 's' }} copied,
         <span class="{{ 'warn-text' if store.unarchived else '' }}">{{ store.unarchived }}
         still only here</span>.
