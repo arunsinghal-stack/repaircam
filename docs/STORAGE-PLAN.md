@@ -68,6 +68,25 @@ as new footage arrives.
 That is a completely different purchase from "keep everything for ever", which
 at the same rate is 11 TB in year one and more every year after.
 
+**The error is not symmetric, so do not split the difference.** Too long costs
+money and can be shortened at any time. Too short cannot be undone — the
+footage is gone, and it is gone precisely for the repairs old enough that
+somebody is now arguing about them. Pick a window longer than seems necessary
+and shorten it once there is a year of evidence about when disputes actually
+arrive.
+
+The question that decides the number is not a storage question at all:
+**how long after a repair can a customer still come back about it?** The
+retention window is that, plus a margin. A shop that warrants a screen for 90
+days cannot hold footage for 30 and expect it to be there when it is needed.
+
+Repair and packing can differ, and the catalogue already distinguishes them
+(`source` is `repair` or `packing`). A packing dispute — "the box was short an
+item" — surfaces within the delivery and return window, which is usually far
+shorter than a repair warranty. `prune` applies one `keep_days` to everything
+today; splitting it by source is a small change worth making if the two numbers
+turn out to be far apart.
+
 ### 2. Where does the second copy live?
 
 Cloud is out — the design has always been that video never leaves the shop, and
