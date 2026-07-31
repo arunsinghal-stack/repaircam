@@ -123,7 +123,39 @@ or a policy is added. Worth deciding before it is urgent rather than after.
 
 ---
 
-## A gap worth naming now
+## How it works today
+
+The life of one clip:
+
+```
+Start  ->  segments/WC2/20260729-104200/seg-001.mp4     one file per Start->Stop
+Stop                                    seg-002.mp4
+Done   ->  ffmpeg concat (stream copy, no re-encode)
+       ->  recordings/2026-07-29/WC2_20260729-104200_wh-mo-42_screen.mp4
+       +   the same name .json  — the sidecar that makes it self-describing
+       ->  a catalogue row holding the path RELATIVE to the data directory
+       ->  the empty segment folder is removed
+
+worker ->  copy to  <archive_dir>/recordings/2026-07-29/<same name>.mp4
+           written as .part, size-checked, then renamed
+       ->  archived_at + archive_path on the row
+
+worker ->  older than its source's window AND verifiably still at the archive
+       ->  local .mp4 and .json deleted, local_deleted = 1
+           the row stays: it is the only record of where the footage went
+```
+
+Three things are worth noticing about that shape:
+
+- **The archive mirrors the same relative path.** `recordings/2026-07-29/x.mp4`
+  is at the same place under `archive_dir`, so the archive is browsable in a
+  file manager and means something without the database.
+- **The database is an index, not the truth.** A clip plus its sidecar is a
+  complete dataset sample on its own. `prune` re-checks the archived file at the
+  moment of deletion precisely because the row is not evidence.
+- **Nothing prunes the archive.** Only the recorder's own copy is ever removed.
+
+## Two gaps worth naming now
 
 Retention today is purely by age. There is **no way to mark a clip "keep this
 one"** — the training example, the disputed repair, the one that becomes a
@@ -134,6 +166,21 @@ That is fine while nothing is being deleted, which is the state today. It stops
 being fine the day retention is switched on. The fix is small — a flag on the
 catalogue row that `prune` refuses to delete, and a button in the library — and
 it should land **before** `delete_after_archive: true`, not after.
+
+### 2. A pruned clip's Odoo link breaks
+
+`clip_path()` resolves a catalogue row only under the data directory, and
+`aborts` with *"the video file for this recording is missing from disk"* when it
+is not there. The archived copy is never consulted.
+
+So the first prune silently turns every older chatter link in Odoo into a dead
+end — for footage that still exists, a few centimetres away on the archive disk.
+Nobody would find that until they went looking for an old repair, which is the
+one moment retention exists to serve.
+
+The fix is as small as the last one: fall back to `archive_path` when the local
+file is gone, with the same guard applied to a second allowed root. Like the
+keep flag, it belongs **before** deletion is switched on.
 
 ---
 
@@ -149,7 +196,8 @@ it should land **before** `delete_after_archive: true`, not after.
 4. **Set `archive_dir`**, leave `delete_after_archive: false`. Clips get a
    second home and nothing is deleted. Watch it for a few days; open the archive
    and play a clip from it.
-5. **Add the "keep this one" flag** before deletion is ever enabled.
+5. **Fix both gaps above** before deletion is ever enabled — the "keep this one"
+   flag, and serving a pruned clip from the archive so its Odoo link still works.
 6. **Then set the recorder's own `keep_days` (3–7) and
    `delete_after_archive: true`**, and watch the first prune closely. The
    per-source windows above govern the archive's size; the recorder itself can
