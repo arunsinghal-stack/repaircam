@@ -17,7 +17,7 @@ from typing import Any, Iterator
 
 from . import config
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS recordings (
@@ -55,6 +55,13 @@ CREATE TABLE IF NOT EXISTS recordings (
     -- Set when the local file has been removed. The row stays: it is the only
     -- record of where the footage went.
     local_deleted INTEGER DEFAULT 0,
+    -- Set when the ARCHIVE copy has been removed too, at the end of the
+    -- retention window. That is the one deletion with nothing behind it, so it
+    -- is recorded plainly: the row is what lets the library say "deleted on
+    -- this date under the 30-day policy" instead of "missing from disk", which
+    -- would send somebody hunting for footage that no longer exists.
+    archive_deleted    INTEGER DEFAULT 0,
+    archive_deleted_at TEXT    DEFAULT '',
     -- "Keep this one." A training example, a disputed repair, a dataset sample.
     -- Retention is by age, and age knows nothing about which clips matter, so
     -- without this the important ones expire exactly like the routine ones.
@@ -149,7 +156,10 @@ class Recording:
     archived_at: str = ""
     archive_path: str = ""
     local_deleted: int = 0
-    #: Never delete this clip locally, whatever its age.
+    #: The archive copy is gone too — the footage no longer exists anywhere.
+    archive_deleted: int = 0
+    archive_deleted_at: str = ""
+    #: Never delete this clip, locally or at the archive, whatever its age.
     keep: int = 0
     created_at: str = field(default_factory=utcnow)
     labels: JobLabels = field(default_factory=JobLabels)
@@ -213,6 +223,10 @@ class Catalogue:
                 ("archive_path", "ALTER TABLE recordings ADD COLUMN archive_path TEXT DEFAULT ''"),
                 ("local_deleted", "ALTER TABLE recordings ADD COLUMN local_deleted INTEGER DEFAULT 0"),
                 ("keep", "ALTER TABLE recordings ADD COLUMN keep INTEGER DEFAULT 0"),
+                ("archive_deleted",
+                 "ALTER TABLE recordings ADD COLUMN archive_deleted INTEGER DEFAULT 0"),
+                ("archive_deleted_at",
+                 "ALTER TABLE recordings ADD COLUMN archive_deleted_at TEXT DEFAULT ''"),
             ):
                 if column not in existing:
                     conn.execute(ddl)
@@ -243,6 +257,12 @@ class Catalogue:
             archived_at=(row["archived_at"] if "archived_at" in row.keys() else "") or "",
             archive_path=(row["archive_path"] if "archive_path" in row.keys() else "") or "",
             local_deleted=int(row["local_deleted"] if "local_deleted" in row.keys() else 0) or 0,
+            archive_deleted=int(
+                row["archive_deleted"] if "archive_deleted" in row.keys() else 0
+            ) or 0,
+            archive_deleted_at=(
+                row["archive_deleted_at"] if "archive_deleted_at" in row.keys() else ""
+            ) or "",
             keep=int(row["keep"] if "keep" in row.keys() else 0) or 0,
             created_at=row["created_at"],
             labels=JobLabels(
@@ -504,6 +524,66 @@ class Catalogue:
         with self.connect() as conn:
             rows = conn.execute("\n".join(sql), params).fetchall()
         return [self._to_recording(row) for row in rows]
+
+    def list_archive_expired(
+        self,
+        cutoff_iso: str,
+        *,
+        source: str | None = None,
+        exclude_sources: list[str] | None = None,
+        limit: int = 200,
+    ) -> list[Recording]:
+        """Archived clips past the end of their retention window.
+
+        The same shape as ``list_archived_before``, and deliberately a separate
+        method, because it answers a much heavier question: not "may the
+        recorder's copy go" but "may the LAST copy go". So it asks for more —
+        the clip must have reached the archive, must not already have been
+        removed from it, and must not be marked keep. Nothing here depends on
+        whether the local copy survives; that is the caller's business.
+        """
+        sql = [
+            "SELECT * FROM recordings",
+            # keep = 0 lives in the SQL, not in the caller, for the same reason
+            # as in list_archived_before — only more so. This is the delete that
+            # cannot be undone by fetching the file from somewhere else.
+            " WHERE archived_at != '' AND archive_deleted = 0 AND keep = 0",
+            "   AND started_at < ?",
+        ]
+        params: list = [cutoff_iso]
+        if source is not None:
+            sql.append("   AND source = ?")
+            params.append(source)
+        if exclude_sources:
+            marks = ",".join("?" for _ in exclude_sources)
+            sql.append(f"   AND source NOT IN ({marks})")
+            params.extend(exclude_sources)
+        sql.append(" ORDER BY id ASC LIMIT ?")
+        params.append(limit)
+
+        with self.connect() as conn:
+            rows = conn.execute("\n".join(sql), params).fetchall()
+        return [self._to_recording(row) for row in rows]
+
+    def mark_archive_deleted(self, recording_id: int) -> None:
+        """The footage is gone from the world, and the date it went.
+
+        The row survives its own footage on purpose. An Odoo chatter link from
+        eight months ago still resolves to this row, and "removed on 12 March
+        under the 30-day policy" is an answer; a dead link is not.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE recordings SET archive_deleted=1, archive_deleted_at=?, "
+                "local_deleted=1 WHERE id=?",
+                (utcnow(), recording_id),
+            )
+
+    def count_archive_deleted(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute(
+                "SELECT COUNT(*) AS n FROM recordings WHERE archive_deleted = 1"
+            ).fetchone()["n"])
 
     def mark_archived(self, recording_id: int, archive_path: str) -> None:
         with self.connect() as conn:

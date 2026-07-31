@@ -138,22 +138,31 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - Catalogue schema v2: `recordings.source` / `source_ref` say which integration a clip came
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
-- **Retention/archive (Phase 3, BUILT — not yet configured in the shop):** `storage.py`.
+- **Retention/archive (Phase 3, BUILT — the lifecycle is closed):** `storage.py`.
   Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
-  is let through. Clips are copied to `archive_dir` and verified there; only then, and only
-  with `delete_after_archive: true`, are local copies older than `keep_days` removed (per source: **repair 30 days, packing 45**, set in
-  `keep_days_by_source`; anything unnamed and hand-started clips use `keep_days`). NOTE
-  those windows bound the **recorder only** — **nothing ever removes a file from the
-  archive**, so the archive grows for ever until stage 6 in docs/STORAGE-PLAN.md is
-  built. A clip marked `keep` is never deleted locally either. And
-  the archived file is re-checked for existence and size at the moment of deletion, because
-  the database row is not evidence. A background worker does it every 10 min; `cli storage
-  [--archive] [--prune]` does it by hand. Config: `repaircam/storage.yaml` (optional —
-  the guard applies without it). **`archive_dir` is unset today, so this laptop still holds
-  the only copy of every clip.** Sizing and the decisions it waits on: docs/STORAGE-PLAN.md
-  — at 3 benches this is 22–43 GB/day, so the recorder's own disk holds 5–9 days and
-  `keep_days: 30` never fits it. Retention is by age only; there is **no "keep this clip"
-  flag**, and one must exist before `delete_after_archive` is ever turned on.
+  is let through. Clips are copied to `archive_dir` and verified there.
+  **THERE ARE TWO RETENTION WINDOWS AND THEY ARE NOT THE SAME THING:**
+  - `keep_days_local` (default 7) = how long the **recorder** keeps its copy, with
+    `delete_after_archive: true`. This is **arithmetic, not policy** — 3 benches ≈ 43 GB/day,
+    so this 204 GB laptop holds ~5 days. Putting the shop's 30-day policy here fills the disk
+    by mid-week and the guard then refuses Start while nothing is old enough to prune.
+    Nothing is lost when it expires: the clip page falls back to the archive, so Odoo links
+    still play.
+  - `keep_days` + `keep_days_by_source` (**repair 30, packing 45**) = how long the
+    **archive** keeps it, with `delete_from_archive: true` (`prune_archive`). This is the
+    shop's policy and the point at which **the footage stops existing**. Two switches on
+    purpose: one frees the laptop, the other ends the record.
+  A clip marked `keep` is never deleted by either pass — enforced in the SQL, not the caller.
+  The archived file is re-checked for existence and size at the moment of local deletion,
+  and `prune_archive` refuses any path not under the archive configured *now*, refuses an
+  unmounted archive, and takes the local copy with it. The catalogue row **outlives its
+  footage** (`archive_deleted`, `archive_deleted_at`) so an old Odoo link says "passed its
+  retention window and has been deleted" rather than "missing from disk". A background
+  worker does all of it every 10 min; `cli storage [--archive] [--prune]` does it by hand.
+  Config: `repaircam/storage.yaml` (optional — the guard applies without it); a change needs
+  a service restart, since the worker reads it once. Sizing: docs/STORAGE-PLAN.md — 22–43
+  GB/day at 3 benches, so the archive settles near 1.4 TB on a 30/45 policy.
+  Stage 7 (exporting `keep`-marked clips as a training set) still does not exist.
 
 ## Going live (recorder cut over to PRODUCTION 2026-07-29; `preflight` all green)
 - Three benches configured — WC1, WC2, WC13 — all with an `odoo_workcenter_id`, all

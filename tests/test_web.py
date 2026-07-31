@@ -8,6 +8,7 @@ import pytest
 
 pytest.importorskip("flask", reason="Flask is only needed for the web UI")
 
+from repaircam import storage  # noqa: E402
 from repaircam.catalogue import JobLabels, Recording, utcnow  # noqa: E402
 from repaircam.recorder import Recorder  # noqa: E402
 from repaircam.web import create_app  # noqa: E402
@@ -164,6 +165,55 @@ def test_status_page_renders(client):
     assert b"Data directory" in response.data
 
 
+def _configure_storage(app, tmp_path: Path, monkeypatch, body: str) -> Path:
+    """Write a storage.yaml and make the running app use it.
+
+    The background worker reads the config once, at startup, so in the shop a
+    changed storage.yaml needs a service restart. Tests are not going to restart
+    an app, so the worker's copy is replaced directly.
+    """
+    archive = tmp_path / "archive"
+    archive.mkdir(exist_ok=True)
+    path = tmp_path / "storage.yaml"
+    path.write_text(f"storage:\n  archive_dir: {archive}\n{body}")
+    monkeypatch.setenv("REPAIRCAM_STORAGE", str(path))
+    worker = app.extensions.get("storage")
+    if worker:
+        worker.cfg = storage.load_config(path)
+    return archive
+
+
+def test_status_states_the_two_retention_windows_apart(client, app, tmp_path: Path, monkeypatch):
+    """They are not the same promise. One frees the laptop and loses nothing;
+    the other ends the footage. Shown as one number, somebody reads the shop's
+    30-day policy as what this disk holds."""
+    _configure_storage(app, tmp_path, monkeypatch, (
+        "  keep_days_local: 5\n"
+        "  delete_after_archive: true\n  delete_from_archive: true\n"
+        "  keep_days_by_source:\n    repair: 30\n    packing: 45\n"
+    ))
+
+    page = client.get("/status").data.decode()
+
+    assert "On this recorder:" in page
+    assert "5 days" in page
+    assert "In the archive:" in page
+    assert "repair" in page and "30 days" in page
+    assert "packing" in page and "45 days" in page
+    assert "gone for good" in page
+
+
+def test_status_warns_when_nothing_ever_leaves_the_archive(client, app, tmp_path: Path, monkeypatch):
+    """The default, and the honest thing to say about it: ~950 GB a month
+    arriving at three busy benches, and nothing leaving."""
+    _configure_storage(app, tmp_path, monkeypatch, "")
+
+    page = client.get("/status").data.decode()
+
+    assert "delete_from_archive" in page
+    assert "only grows" in page
+
+
 def test_status_page_surfaces_unsaved_footage(client, data_root: Path):
     """Orphaned segments are in no other page — the status page is where the
     owner finds out footage exists but never became a clip."""
@@ -269,6 +319,22 @@ def test_a_pruned_clip_still_plays_from_the_archive(client, app, tmp_path, monke
 def test_the_page_says_it_is_playing_from_the_archive(client, app, tmp_path, monkeypatch):
     clip = _archived_clip(app, tmp_path, monkeypatch)
     assert b"Playing from the archive" in client.get(f"/clip/{clip.id}").data
+
+
+def test_expired_footage_says_it_expired(client, app, tmp_path, monkeypatch):
+    """Retention working is not a fault, and must not be reported as one. Someone
+    following an old link deserves an answer, not a dead end that sends them
+    hunting for a file nobody will ever find."""
+    clip = _archived_clip(app, tmp_path, monkeypatch, still_there=False)
+    app.extensions["catalogue"].mark_archive_deleted(clip.id)
+
+    page = client.get(f"/clip/{clip.id}").data
+
+    assert b"passed its retention window" in page
+    assert b"missing from disk" not in page
+    # Nothing to keep any more, so the button that promises it is not offered.
+    # (The words still appear, in the advice about marking clips before they go.)
+    assert f"/clip/{clip.id}/keep".encode() not in page
 
 
 def test_an_unreachable_archive_says_so_rather_than_just_404(client, app, tmp_path, monkeypatch):

@@ -296,7 +296,9 @@ def cmd_storage(args: argparse.Namespace) -> int:
 
     if args.prune:
         result = storage.prune(catalogue, cfg)
-        print(f"{OK} {result.summary()}")
+        print(f"{OK} recorder: {result.summary()}")
+        expired = storage.prune_archive(catalogue, cfg)
+        print(f"{OK} archive:  {expired.summary()}")
 
     info = storage.status(catalogue, cfg)
     disk = info["disk"]
@@ -313,18 +315,36 @@ def cmd_storage(args: argparse.Namespace) -> int:
 
     print(f"     clips     {info['archived']} with a second copy, "
           f"{info['unarchived']} without, {info['kept']} marked keep")
+    if info["expired"]:
+        print(f"               {info['expired']} past their window — the footage is gone")
     if info["unarchived"] and cfg.archive_dir:
         print( "            Run:  python3 -m repaircam.cli storage --archive")
-    windows = ", ".join(
-        f"{source or 'by hand'} {days}d"
-        for source, days in sorted(cfg.keep_days_by_source.items())
-    )
-    windows = f"{windows}, everything else {cfg.keep_days}d" if windows else f"{cfg.keep_days}d"
-    if cfg.archive_dir and not cfg.delete_after_archive:
-        print(f"     deleting  off — clips are kept after archiving")
-        print(f"               once on: {windows}")
-    elif cfg.archive_dir:
-        print(f"     deleting  ON — {windows}")
+
+    if cfg.archive_dir:
+        # Two windows, said separately, because they mean different things: one
+        # frees this laptop, the other ends the footage.
+        if cfg.delete_after_archive:
+            print(f"     recorder  keeps {cfg.keep_days_local} days, then deletes its copy "
+                  f"(the archive still has it)")
+        else:
+            print(f"     recorder  keeps everything — deleting is off")
+            print(f"               once on: {cfg.keep_days_local} days")
+
+        windows = ", ".join(
+            f"{source or 'by hand'} {days}d"
+            for source, days in sorted(cfg.keep_days_by_source.items())
+        )
+        windows = f"{windows}, everything else {cfg.keep_days}d" if windows else f"{cfg.keep_days}d"
+        if cfg.delete_from_archive:
+            print(f"     archive   {windows} — THEN THE FOOTAGE IS GONE")
+        else:
+            print(f"     archive   keeps everything for ever — nothing expires")
+            print(f"               once on: {windows}")
+
+    for source in info["window_conflicts"]:
+        print(f"  {WARN} windows   {source or 'clips started by hand'}: the archive window is "
+              f"shorter than the recorder's {cfg.keep_days_local} days")
+        print( "            The archive pass wins, so those clips go early. Check storage.yaml.")
     return 0
 
 

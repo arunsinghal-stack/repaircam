@@ -5,7 +5,7 @@ or moved anything until this module existed, so the recorder's disk filled and
 the first thing anyone learned about it was a recording stopping in the middle
 of a repair.
 
-Three pieces, and the order between them is the whole safety argument:
+Four pieces, and the order between them is the whole safety argument:
 
 1. **A free-space guard.** Recording is refused *before* it starts when the disk
    is nearly full, because a clip that dies half-written is worse than one that
@@ -13,9 +13,20 @@ Three pieces, and the order between them is the whole safety argument:
 2. **An archive copy.** Clips are copied to a second disk or a NAS mount and
    verified there. Until that exists, the shop's only copy of every repair is
    on one laptop.
-3. **Retention, which deletes only what is archived.** Age alone is never
-   enough. A clip is removed locally only once a verified copy exists
-   elsewhere, and the check is re-run at the moment of deletion.
+3. **Retention on the recorder, which deletes only what is archived.** Age
+   alone is never enough. A clip is removed locally only once a verified copy
+   exists elsewhere, and the check is re-run at the moment of deletion.
+4. **Retention at the archive**, which is where footage finally ends. Without
+   it the archive only ever grows — three benches at eight hours is ~950 GB a
+   month arriving and nothing leaving.
+
+**The two retention windows are different things and must not be confused.**
+The recorder's (``keep_days_local``) is arithmetic: this laptop holds about
+five days of three benches and no setting changes that. The archive's
+(``keep_days_by_source``) is the shop's policy: how far back anyone can look.
+Putting the policy on the recorder — 30 days on a disk that holds five — fills
+it by mid-week, and then the free-space guard refuses Start while retention
+reports itself working perfectly.
 
 Archiving is off until ``storage.yaml`` names a destination. The guard is not:
 it works with sensible defaults on any install, because the failure it prevents
@@ -49,8 +60,19 @@ DEFAULT_MIN_FREE_GB = 20.0
 #: Say something is wrong below this, while still recording.
 DEFAULT_WARN_FREE_GB = 50.0
 
-#: How long a clip stays on the recorder once it is safely archived, when
-#: nothing more specific is set for what it is footage of.
+#: How long a clip stays on the RECORDER once it is safely archived.
+#:
+#: This is not a policy, it is arithmetic. Three benches at eight recorded
+#: hours is ~43 GB a day, so a 200 GB laptop holds about five days and no
+#: setting can change that. Keeping the shop's real retention window here
+#: instead — 30 days, say — would need 1.3 TB, so the disk would simply fill,
+#: the free-space guard would refuse Start, and nothing would be old enough to
+#: prune. Recording would stop mid-week with the retention window "working".
+DEFAULT_KEEP_DAYS_LOCAL = 7
+
+#: How long a clip stays in the ARCHIVE. THIS is the shop's policy: how far
+#: back anyone can look. It applies to the last copy of the footage, so when it
+#: expires the footage is gone for good.
 DEFAULT_KEEP_DAYS = 30
 
 #: Retention differs by what the footage is FOR, so it differs by source.
@@ -80,32 +102,56 @@ class StorageConfig:
     #: Where the second copy goes. Empty means archiving is off — and with it,
     #: deletion, because nothing may be deleted that was never copied.
     archive_dir: str = ""
-    #: Fallback, and what a clip started by hand in RepairCam gets — it belongs
-    #: to no integration, so no integration's window applies to it.
+    #: How long the RECORDER keeps its copy after archiving it. One number for
+    #: everything: the recorder's limit is how big its disk is, and that does
+    #: not vary with what the footage is of.
+    keep_days_local: int = DEFAULT_KEEP_DAYS_LOCAL
+    #: The ARCHIVE's fallback window, and what a clip started by hand in
+    #: RepairCam gets — it belongs to no integration, so no integration's
+    #: window applies to it.
     keep_days: int = DEFAULT_KEEP_DAYS
-    #: Per-source overrides: {"repair": 30, "packing": 45}. A source not named
-    #: here falls back to keep_days.
+    #: Per-source archive windows: {"repair": 30, "packing": 45}. A source not
+    #: named here falls back to keep_days.
     keep_days_by_source: dict = field(default_factory=lambda: dict(DEFAULT_KEEP_DAYS_BY_SOURCE))
     #: Off by default even when a destination is set. Deleting footage is the
     #: one thing here that cannot be undone, so it is opted into explicitly.
     delete_after_archive: bool = False
+    #: And this one is opted into separately again, because it is a different
+    #: act. delete_after_archive removes a copy; this removes the footage.
+    delete_from_archive: bool = False
 
     @property
     def archive_path(self) -> Path | None:
         return Path(self.archive_dir).expanduser() if self.archive_dir else None
 
     def keep_days_for(self, source: str) -> int:
-        """How long this kind of footage stays on the recorder."""
+        """How long this kind of footage stays IN THE ARCHIVE."""
         return int(self.keep_days_by_source.get(source or "", self.keep_days))
+
+    @property
+    def local_outlives_archive(self) -> list[str]:
+        """Sources whose archive window is shorter than the recorder's own.
+
+        A contradiction rather than an error — the recorder would be asked to
+        hold footage longer than the shop wants it to exist. It resolves
+        itself, because the archive pass removes the local copy too, but it
+        means somebody typed a number they did not mean, so it is reported.
+        """
+        windows = {**{"": self.keep_days}, **self.keep_days_by_source}
+        return sorted(
+            source for source, days in windows.items() if int(days) < self.keep_days_local
+        )
 
     def describe(self) -> dict:
         return {
             "min_free_gb": self.min_free_gb,
             "warn_free_gb": self.warn_free_gb,
             "archive_dir": self.archive_dir or "not set",
+            "keep_days_local": self.keep_days_local,
             "keep_days": self.keep_days,
             "keep_days_by_source": dict(self.keep_days_by_source),
             "delete_after_archive": self.delete_after_archive,
+            "delete_from_archive": self.delete_from_archive,
         }
 
 
@@ -152,9 +198,11 @@ def load_config(path: Path | None = None) -> StorageConfig:
             min_free_gb=float(values.get("min_free_gb", DEFAULT_MIN_FREE_GB)),
             warn_free_gb=float(values.get("warn_free_gb", DEFAULT_WARN_FREE_GB)),
             archive_dir=str(values.get("archive_dir") or "").strip(),
+            keep_days_local=int(values.get("keep_days_local", DEFAULT_KEEP_DAYS_LOCAL)),
             keep_days=int(values.get("keep_days", DEFAULT_KEEP_DAYS)),
             keep_days_by_source=by_source,
             delete_after_archive=bool(values.get("delete_after_archive", False)),
+            delete_from_archive=bool(values.get("delete_from_archive", False)),
         )
     except (TypeError, ValueError) as exc:
         raise StorageError(f"{path} has a bad value: {exc}") from exc
@@ -341,6 +389,19 @@ def archive_pending(
 # --------------------------------------------------------------------------
 
 
+def _cutoff(days: int) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def _under(path: Path, root: Path) -> bool:
+    """Is ``path`` inside ``root``? (Path.is_relative_to is 3.9+; this box is 3.8.)"""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 @dataclass
 class PruneResult:
     deleted: list[int]
@@ -365,19 +426,20 @@ def prune(
     *,
     root: Path | None = None,
 ) -> PruneResult:
-    """Delete local clips that are old AND verifiably archived.
+    """Delete the RECORDER's copy of clips that are old AND verifiably archived.
 
-    How long is "old" depends on what the footage is of: a repair stays as long
-    as it can be disputed under warranty, a packing clip only as long as a
-    delivery complaint can arrive. ``keep_days_by_source`` holds the difference
-    and ``keep_days`` covers anything not named — including a clip somebody
-    started by hand, which belongs to no integration at all.
+    One window for everything — ``keep_days_local``. What the footage is of has
+    no bearing on how much disk this laptop has. The shop's real retention
+    windows live at the archive, in ``prune_archive``; asking the recorder to
+    honour them would fill it long before the first one expired.
 
-    Every condition here is a refusal, because this is the only operation in
-    RepairCam that destroys footage:
+    Nothing is lost here: every clip removed has a verified copy elsewhere, and
+    its Odoo link keeps working because the clip page falls back to the archive.
+
+    Every condition is a refusal, because this operation destroys files:
 
     - archiving must be configured, and deletion explicitly enabled;
-    - the clip must be older than its own source's window;
+    - the clip must be older than ``keep_days_local``;
     - the catalogue must say it was archived;
     - **and the archived file must still be there, at the right size, checked
       now** — not trusted from a database row written weeks ago. A NAS that was
@@ -399,26 +461,9 @@ def prune(
         )
 
     result = PruneResult([])
-    now = datetime.now(timezone.utc)
+    cutoff = _cutoff(cfg.keep_days_local)
 
-    def cutoff(days: int) -> str:
-        return (now - timedelta(days=days)).isoformat()
-
-    # One pass per retention window. Named sources first, then everything else
-    # — including clips started by hand, which belong to no integration and so
-    # get the default rather than any integration's window.
-    named = sorted(cfg.keep_days_by_source)
-    groups: list[dict] = [
-        {"cutoff_iso": cutoff(cfg.keep_days_for(source)), "source": source}
-        for source in named
-    ]
-    groups.append({"cutoff_iso": cutoff(cfg.keep_days), "exclude_sources": named or None})
-
-    candidates: list[Recording] = []
-    for group in groups:
-        candidates.extend(catalogue.list_archived_before(**group))
-
-    for recording in candidates:
+    for recording in catalogue.list_archived_before(cutoff):
         source = root / recording.path
         if not source.exists():
             continue  # already gone; the row still says where it went
@@ -458,6 +503,122 @@ def prune(
     return result
 
 
+def prune_archive(
+    catalogue: Catalogue | None = None,
+    cfg: StorageConfig | None = None,
+    *,
+    root: Path | None = None,
+) -> PruneResult:
+    """Delete footage from the archive once its retention window has passed.
+
+    This is the end of a clip's life, and the only deletion in RepairCam with
+    nothing behind it. Everywhere else "delete" means "remove one of two
+    copies"; here it means the footage stops existing. So the refusals are
+    stricter, and one of them is new:
+
+    - archiving must be configured **and the archive must be mounted**. An
+      absent directory is the shape of an unmounted disk, and an unmounted disk
+      has nothing to delete — it only has rows that would get marked deleted
+      while the footage sat safely on a disk in a drawer.
+    - ``delete_from_archive`` must be on. Deliberately not the same switch as
+      ``delete_after_archive``: one frees the laptop, this one ends the record.
+    - the clip must be older than **its own source's** window — repair 30 days,
+      packing 45, whatever the shop set. Here the per-source windows finally
+      mean what the shop thought they meant.
+    - it must not be marked keep. Enforced in the SQL, not here.
+    - **its archived path must be under the archive configured now.** A row
+      written when ``archive_dir`` pointed at a different disk names a file on
+      that disk, and deleting a path this config never wrote is how a footgun
+      goes off in a machine with two archive drives.
+
+    The local copy goes too if it is still there. The window has expired: it
+    would be strange to declare the footage's life over and leave a copy on the
+    recorder — and, since ``prune`` only ever deletes clips it can verify at the
+    archive, that leftover copy could never be removed by anything again.
+
+    The catalogue row survives its footage, holding the date and the reason.
+    """
+    cfg = cfg or load_config()
+    catalogue = catalogue or Catalogue()
+    root = root or config.data_dir()
+
+    destination = cfg.archive_path
+    if destination is None:
+        return PruneResult([], skipped_reason="the archive is not set up")
+    if not cfg.delete_from_archive:
+        return PruneResult(
+            [],
+            skipped_reason=(
+                "nothing expires from the archive — set delete_from_archive in storage.yaml"
+            ),
+        )
+    if not destination.exists():
+        return PruneResult(
+            [], skipped_reason=f"the archive at {destination} is not there — is the disk mounted?"
+        )
+
+    allowed = destination.resolve()
+    result = PruneResult([])
+
+    # One pass per window. Named sources first, then everything else — which
+    # includes clips started by hand in RepairCam, belonging to no integration
+    # and so getting the fallback rather than any integration's window.
+    named = sorted(cfg.keep_days_by_source)
+    groups: list[dict] = [
+        {"cutoff_iso": _cutoff(cfg.keep_days_for(source)), "source": source} for source in named
+    ]
+    groups.append({"cutoff_iso": _cutoff(cfg.keep_days), "exclude_sources": named or None})
+
+    candidates: list[Recording] = []
+    for group in groups:
+        candidates.extend(catalogue.list_archive_expired(**group))
+
+    for recording in candidates:
+        archived = Path(recording.archive_path or "")
+        if not recording.archive_path:
+            continue
+        try:
+            resolved = archived.resolve()
+        except OSError as exc:
+            log.warning("clip %s: cannot resolve %s: %s", recording.id, archived, exc)
+            continue
+        if not _under(resolved, allowed):
+            log.warning(
+                "clip %s is archived at %s, which is not under the archive configured now "
+                "(%s) — leaving it alone", recording.id, resolved, allowed,
+            )
+            continue
+
+        freed = 0
+        try:
+            if resolved.exists():
+                freed = resolved.stat().st_size
+                resolved.unlink()
+            sidecar_for(resolved).unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("could not remove the archived clip %s: %s", recording.id, exc)
+            continue
+
+        # The recorder's copy, if the local window was longer than this one.
+        local = root / recording.path
+        try:
+            if local.exists():
+                freed += local.stat().st_size
+                local.unlink()
+            sidecar_for(local).unlink(missing_ok=True)
+        except OSError as exc:
+            log.warning("removed the archived clip %s but not the local copy: %s",
+                        recording.id, exc)
+
+        catalogue.mark_archive_deleted(recording.id)
+        result.deleted.append(recording.id)
+        result.freed_bytes += freed
+
+    if result.deleted:
+        log.info("archive retention: %s", result.summary())
+    return result
+
+
 def status(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None) -> dict:
     """Everything the status page and `cli storage` need, in one call."""
     cfg = cfg or load_config()
@@ -475,6 +636,12 @@ def status(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None)
         # Kept clips never expire, so they are the part of the archive that only
         # ever grows. Worth watching, not hiding.
         "kept": catalogue.count_kept(),
+        # Footage that no longer exists. Shown because "the archive is smaller
+        # than you expect" should have a number attached to it, not be a
+        # discovery.
+        "expired": catalogue.count_archive_deleted(),
+        # A window somebody typed that contradicts another one.
+        "window_conflicts": cfg.local_outlives_archive,
     }
 
 
@@ -526,9 +693,12 @@ class StorageWorker:
         try:
             archived = archive_pending(self.catalogue, self.cfg)
             pruned = prune(self.catalogue, self.cfg)
+            expired = prune_archive(self.catalogue, self.cfg)
             parts = [archived.summary()]
             if pruned.deleted or pruned.skipped_reason == "":
                 parts.append(pruned.summary())
+            if expired.deleted:
+                parts.append(f"archive: {expired.summary()}")
             self.last_summary = "; ".join(p for p in parts if p)
             self.last_error = "" if archived.ok else archived.summary()
         except Exception as exc:  # never let this thread die

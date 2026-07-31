@@ -18,6 +18,18 @@
   {% endif %}
   <video class="player" controls preload="metadata"
          src="{{ url_for('repaircam.clip_video', recording_id=recording.id) }}"></video>
+{% elif recording.archive_deleted %}
+  {# Expired footage is not a fault, and must never be reported as one. Somebody
+     following an eight-month-old link in Odoo deserves an answer, not a dead end
+     that sends them looking for a file nobody will ever find. #}
+  <div class="flash">
+    This footage has passed its retention window and has been deleted.
+    <div class="small muted">
+      Removed {{ recording.archive_deleted_at.replace('T', ' ')[:16] }} UTC. The record of the
+      job is kept; the video itself is not. Mark clips <b>Keep this clip</b> to stop that
+      happening &mdash; kept clips never expire.
+    </div>
+  </div>
 {% else %}
   <div class="flash flash-error">
     The video file is missing from disk: <code>{{ recording.path }}</code>
@@ -29,17 +41,19 @@
 {% endif %}
 
 {# Retention deletes by age, which knows nothing about which clips matter. #}
+{% if not recording.archive_deleted %}
 <form method="post" action="{{ url_for('repaircam.clip_keep', recording_id=recording.id) }}"
       class="keep-form">
   <input type="hidden" name="keep" value="{{ '0' if recording.keep else '1' }}">
   {% if recording.keep %}
-    <span class="pill ok-text">Kept &mdash; never deleted to make room</span>
+    <span class="pill ok-text">Kept &mdash; never deleted, here or at the archive</span>
     <button class="btn btn-quiet">Stop keeping</button>
   {% else %}
     <button class="btn btn-quiet">Keep this clip</button>
-    <span class="muted small">Marks it so clearing space never removes it.</span>
+    <span class="muted small">Marks it so retention never removes it.</span>
   {% endif %}
 </form>
+{% endif %}
 
 <div class="two-col">
   <section>

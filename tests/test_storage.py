@@ -30,7 +30,9 @@ def archive(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def cfg(archive: Path) -> StorageConfig:
-    return StorageConfig(archive_dir=str(archive), keep_days=7, delete_after_archive=True)
+    return StorageConfig(
+        archive_dir=str(archive), keep_days_local=7, delete_after_archive=True
+    )
 
 
 def make_clip(catalogue: Catalogue, data_root: Path, *, name="a.mp4", days_old=0,
@@ -311,11 +313,15 @@ def test_the_config_is_read(tmp_path):
 
 
 def by_source_cfg(archive: Path) -> StorageConfig:
+    """The shop's real shape: a short window on the recorder, long ones at the
+    archive, and both deletions switched on."""
     return StorageConfig(
         archive_dir=str(archive),
+        keep_days_local=7,
         keep_days=7,
         keep_days_by_source={"repair": 30, "packing": 45},
         delete_after_archive=True,
+        delete_from_archive=True,
     )
 
 
@@ -327,7 +333,10 @@ def make_sourced(catalogue, data_root, *, name, days_old, source, ref="x"):
 
 def test_repair_and_packing_expire_on_their_own_clocks(catalogue, data_root, archive):
     """A repair is disputable while it is under warranty; a packing complaint
-    arrives inside the delivery window. One number would be wrong twice."""
+    arrives inside the delivery window. One number would be wrong twice.
+
+    These are the ARCHIVE's windows: the point at which footage stops existing.
+    """
     cfg = by_source_cfg(archive)
     old_repair = make_sourced(catalogue, data_root, name="r-old.mp4", days_old=40, source="repair")
     new_repair = make_sourced(catalogue, data_root, name="r-new.mp4", days_old=20, source="repair")
@@ -335,23 +344,42 @@ def test_repair_and_packing_expire_on_their_own_clocks(catalogue, data_root, arc
     new_pack = make_sourced(catalogue, data_root, name="p-new.mp4", days_old=40, source="packing")
     storage.archive_pending(catalogue, cfg, root=data_root, limit=99)
 
-    result = storage.prune(catalogue, cfg, root=data_root)
+    result = storage.prune_archive(catalogue, cfg, root=data_root)
 
     assert sorted(result.deleted) == sorted([old_repair.id, old_pack.id])
     # 40 days is past a repair's 30 and inside a packing clip's 45.
-    assert not (data_root / old_repair.path).exists()
-    assert (data_root / new_repair.path).exists()
-    assert not (data_root / old_pack.path).exists()
-    assert (data_root / new_pack.path).exists()
+    assert not (archive / old_repair.path).exists()
+    assert (archive / new_repair.path).exists()
+    assert not (archive / old_pack.path).exists()
+    assert (archive / new_pack.path).exists()
+
+
+def test_the_recorder_uses_one_window_for_everything(catalogue, data_root, archive):
+    """A repair's 30 days and a packing clip's 45 are archive policy. The
+    recorder's own window is arithmetic — this laptop holds about five days —
+    so applying the policy here would fill the disk long before anything
+    expired, and the free-space guard would stop recording mid-week."""
+    cfg = by_source_cfg(archive)  # keep_days_local = 7
+    repair = make_sourced(catalogue, data_root, name="r.mp4", days_old=10, source="repair")
+    packing = make_sourced(catalogue, data_root, name="p.mp4", days_old=10, source="packing")
+    storage.archive_pending(catalogue, cfg, root=data_root, limit=99)
+
+    result = storage.prune(catalogue, cfg, root=data_root)
+
+    # Both go locally at 7 days, despite their 30- and 45-day archive windows.
+    assert sorted(result.deleted) == sorted([repair.id, packing.id])
+    # And the footage is untouched, which is why that is safe.
+    assert (archive / repair.path).exists()
+    assert (archive / packing.path).exists()
 
 
 def test_a_hand_started_clip_uses_the_default(catalogue, data_root, archive):
     """It belongs to no integration, so no integration's window applies."""
-    cfg = by_source_cfg(archive)  # default is 7 days
+    cfg = by_source_cfg(archive)  # archive default is 7 days
     clip = make_clip(catalogue, data_root, name="byhand.mp4", days_old=10)
     storage.archive_pending(catalogue, cfg, root=data_root)
 
-    result = storage.prune(catalogue, cfg, root=data_root)
+    result = storage.prune_archive(catalogue, cfg, root=data_root)
 
     assert result.deleted == [clip.id]
 
@@ -361,22 +389,156 @@ def test_a_source_with_no_window_of_its_own_falls_back(catalogue, data_root, arc
     clip = make_sourced(catalogue, data_root, name="other.mp4", days_old=10, source="something")
     storage.archive_pending(catalogue, cfg, root=data_root)
 
-    assert storage.prune(catalogue, cfg, root=data_root).deleted == [clip.id]
+    assert storage.prune_archive(catalogue, cfg, root=data_root).deleted == [clip.id]
     assert cfg.keep_days_for("something") == 7
 
 
 def test_the_windows_are_read_from_the_file(tmp_path):
     path = tmp_path / "storage.yaml"
     path.write_text(
-        "storage:\n  keep_days: 14\n"
+        "storage:\n  keep_days_local: 5\n  keep_days: 14\n"
         "  keep_days_by_source:\n    repair: 30\n    packing: 45\n"
     )
     cfg = storage.load_config(path)
 
+    assert cfg.keep_days_local == 5
     assert cfg.keep_days_for("repair") == 30
     assert cfg.keep_days_for("packing") == 45
     assert cfg.keep_days_for("") == 14
     assert cfg.keep_days_for("anything-else") == 14
+
+
+def test_a_missing_local_window_does_not_inherit_the_archive_policy(tmp_path):
+    """An older storage.yaml has keep_days meaning "on the recorder". Reading
+    that as the recorder's window again would put 30 days on a disk that holds
+    five. The recorder falls back to its own small default instead."""
+    path = tmp_path / "storage.yaml"
+    path.write_text("storage:\n  keep_days: 30\n")
+    cfg = storage.load_config(path)
+
+    assert cfg.keep_days == 30
+    assert cfg.keep_days_local == storage.DEFAULT_KEEP_DAYS_LOCAL
+    assert cfg.keep_days_local < 30
+
+
+# --------------------------------------------------------------------------
+# the end of the line: deleting from the archive
+# --------------------------------------------------------------------------
+
+
+def test_the_archive_keeps_everything_until_asked(catalogue, data_root, archive):
+    """The switch that ends footage is separate from the one that frees the
+    laptop, and off until someone sets it."""
+    cfg = StorageConfig(
+        archive_dir=str(archive), keep_days=1, delete_after_archive=True
+    )  # delete_from_archive left off
+    clip = make_clip(catalogue, data_root, name="old.mp4", days_old=99)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    result = storage.prune_archive(catalogue, cfg, root=data_root)
+
+    assert result.deleted == []
+    assert "delete_from_archive" in result.skipped_reason
+    assert (archive / clip.path).exists()
+
+
+def test_an_unmounted_archive_is_never_pruned(catalogue, data_root, tmp_path):
+    """An absent directory is the shape of an unmounted disk. Marking rows
+    deleted against it would declare footage gone while it sat safe in a
+    drawer."""
+    cfg = StorageConfig(
+        archive_dir=str(tmp_path / "not-mounted"), keep_days=1, delete_from_archive=True
+    )
+    make_clip(catalogue, data_root, name="old.mp4", days_old=99)
+
+    result = storage.prune_archive(catalogue, cfg, root=data_root)
+
+    assert result.deleted == []
+    assert "mounted" in result.skipped_reason
+
+
+def test_a_kept_clip_never_expires_from_the_archive(catalogue, data_root, archive):
+    cfg = by_source_cfg(archive)
+    clip = make_sourced(catalogue, data_root, name="keeper.mp4", days_old=400, source="repair")
+    storage.archive_pending(catalogue, cfg, root=data_root)
+    catalogue.set_keep(clip.id)
+
+    assert storage.prune_archive(catalogue, cfg, root=data_root).deleted == []
+    assert (archive / clip.path).exists()
+
+
+def test_a_clip_archived_to_a_different_disk_is_left_alone(catalogue, data_root, archive, tmp_path):
+    """The row names a file on a disk this config never wrote to. Deleting it
+    is how a footgun goes off on a machine that has had two archive drives."""
+    elsewhere = tmp_path / "old-archive"
+    elsewhere.mkdir()
+    old_cfg = StorageConfig(archive_dir=str(elsewhere))
+    clip = make_clip(catalogue, data_root, name="moved.mp4", days_old=99)
+    storage.archive_pending(catalogue, old_cfg, root=data_root)
+
+    now_cfg = StorageConfig(archive_dir=str(archive), keep_days=1, delete_from_archive=True)
+    result = storage.prune_archive(catalogue, now_cfg, root=data_root)
+
+    assert result.deleted == []
+    assert (elsewhere / clip.path).exists()
+
+
+def test_expiring_from_the_archive_takes_the_local_copy_too(catalogue, data_root, archive):
+    """The window is over: it would be strange to declare the footage's life
+    ended and leave a copy on the recorder — one that nothing could ever remove
+    afterwards, because prune only deletes what it can verify at the archive."""
+    cfg = StorageConfig(archive_dir=str(archive), keep_days=1, delete_from_archive=True)
+    clip = make_clip(catalogue, data_root, name="old.mp4", days_old=99)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+    assert (data_root / clip.path).exists()  # local prune has not run
+
+    result = storage.prune_archive(catalogue, cfg, root=data_root)
+
+    assert result.deleted == [clip.id]
+    assert not (archive / clip.path).exists()
+    assert not (data_root / clip.path).exists()
+    assert not sidecar_for(archive / clip.path).exists()
+
+
+def test_the_row_survives_its_own_footage(catalogue, data_root, archive):
+    """An Odoo link from eight months ago still resolves to this row. "Removed
+    on 12 March under the 30-day policy" is an answer; a dead link is not."""
+    cfg = StorageConfig(archive_dir=str(archive), keep_days=1, delete_from_archive=True)
+    clip = make_clip(catalogue, data_root, name="old.mp4", days_old=99)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    storage.prune_archive(catalogue, cfg, root=data_root)
+
+    row = catalogue.get(clip.id)
+    assert row is not None
+    assert row.archive_deleted == 1
+    assert row.archive_deleted_at
+    assert row.local_deleted == 1
+    assert catalogue.count_archive_deleted() == 1
+
+
+def test_an_expired_clip_is_not_offered_up_again(catalogue, data_root, archive):
+    """Its files are gone, so a second pass has nothing to do and must not
+    report deleting it twice."""
+    cfg = StorageConfig(archive_dir=str(archive), keep_days=1, delete_from_archive=True)
+    make_clip(catalogue, data_root, name="old.mp4", days_old=99)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    assert len(storage.prune_archive(catalogue, cfg, root=data_root).deleted) == 1
+    assert storage.prune_archive(catalogue, cfg, root=data_root).deleted == []
+
+
+def test_a_shorter_archive_window_than_the_recorder_is_reported(archive):
+    """Not an error — it resolves itself, because the archive pass takes the
+    local copy too. But somebody typed a number they did not mean."""
+    cfg = StorageConfig(
+        archive_dir=str(archive),
+        keep_days_local=30,
+        keep_days=30,
+        keep_days_by_source={"repair": 30, "packing": 7},
+    )
+    assert cfg.local_outlives_archive == ["packing"]
+    assert StorageConfig().local_outlives_archive == []
 
 
 def test_only_the_named_sources_are_overridden(tmp_path):

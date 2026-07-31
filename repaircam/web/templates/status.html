@@ -43,15 +43,10 @@
     {% else %}
       <code>{{ store.config.archive_dir }}</code>
       <div class="muted small">
-        {{ store.kept }} marked <b>keep</b> (never deleted to make room).<br>
+        {{ store.kept }} marked <b>keep</b> (never deleted, here or at the archive).<br>
         {{ store.archived }} clip{{ '' if store.archived == 1 else 's' }} copied,
         <span class="{{ 'warn-text' if store.unarchived else '' }}">{{ store.unarchived }}
         still only here</span>.
-        {% if store.config.delete_after_archive %}
-          Copied clips are removed locally after {{ store.config.keep_days }} days.
-        {% else %}
-          Nothing is deleted &mdash; <code>delete_after_archive</code> is off.
-        {% endif %}
       </div>
     {% endif %}
     {% if store.last_error %}
@@ -60,7 +55,48 @@
       <div class="muted small">Last checked {{ store.seconds_since_run }}s ago{% if store.last_summary %} &mdash; {{ store.last_summary }}{% endif %}</div>
     {% endif %}
   </dd>
+
+  {# The two windows are shown apart because they are not the same promise. One
+     frees this laptop and loses nothing; the other ends the footage. #}
+  {% if store.config.archive_dir != 'not set' %}
+  <dt>How long footage lasts</dt>
+  <dd>
+    <div class="muted small">
+      <b>On this recorder:</b>
+      {% if store.config.delete_after_archive %}
+        {{ store.config.keep_days_local }} days, then the local copy goes and the archive's
+        remains &mdash; old links still play.
+      {% else %}
+        for ever &mdash; <code>delete_after_archive</code> is off, so this disk fills up.
+      {% endif %}
+    </div>
+    <div class="muted small">
+      <b>In the archive:</b>
+      {% if store.config.delete_from_archive %}
+        {% for source, days in store.config.keep_days_by_source.items() %}{{ source }}
+          {{ days }} days{% if not loop.last %}, {% endif %}{% endfor %}{% if store.config.keep_days_by_source %},
+        everything else{% endif %} {{ store.config.keep_days }} days &mdash;
+        <b>then the footage is gone for good.</b>
+      {% else %}
+        for ever &mdash; <code>delete_from_archive</code> is off, so nothing ever expires and
+        the archive only grows.
+      {% endif %}
+    </div>
+    {% if store.expired %}
+      <div class="muted small">{{ store.expired }} clip{{ '' if store.expired == 1 else 's' }}
+      past the window &mdash; the footage no longer exists.</div>
+    {% endif %}
+    {% for source in store.window_conflicts %}
+      <div class="err small">
+        <b>{{ source or 'Clips started by hand' }}:</b> the archive window is shorter than the
+        recorder's {{ store.config.keep_days_local }} days, so those clips are deleted early.
+        Check <code>storage.yaml</code>.
+      </div>
+    {% endfor %}
+  </dd>
   {% endif %}
+  {% endif %}
+
   <dt>Recorded</dt>
   <dd>{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB</dd>
 </dl>
