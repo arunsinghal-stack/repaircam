@@ -61,12 +61,19 @@ the three reasons RepairCam exists have different answers:
 | **AI dataset** — labelled footage to learn from | A curated subset, kept indefinitely |
 
 Only the first applies to *everything filmed*. The other two are a small
-selection. If accountability is 60 days, three benches at 8h needs about
-**2.6 TB** of archive — and it stops growing, because 60-day-old footage leaves
-as new footage arrives.
+selection.
 
-That is a completely different purchase from "keep everything for ever", which
-at the same rate is 11 TB in year one and more every year after.
+**A correction, because an earlier version of this document had it wrong.**
+`keep_days` bounds the **recorder**, not the archive. Nothing in RepairCam ever
+removes a file from the archive — `prune` reads the archived copy to verify it
+and then leaves it alone. So today the archive does **not** settle at a month's
+worth. It grows for ever, at the full rate in the table above: three benches at
+8h is ~950 GB a month arriving and nothing leaving, which is 11 TB in year one
+and 11 TB more every year after.
+
+Closing that is the last open piece of the lifecycle — see "Where the lifecycle
+stops" below. Until it is closed, size the archive for **how long you are
+willing to go before doing something about it**, not for the retention window.
 
 **The error is not symmetric, so do not split the difference.** Too long costs
 money and can be shortened at any time. Too short cannot be undone — the
@@ -95,9 +102,9 @@ clock. A source not named there falls back to `keep_days` — which is also what
 clip somebody started by hand in RepairCam gets, since it belongs to no
 integration and no integration's window fits it.
 
-Sizing at those numbers, three benches: repair footage settles at roughly
-**30 days' worth** on the archive and packing at 45, so the archive stops
-growing rather than climbing for ever.
+To be exact about what those numbers do: after 30 days a repair clip stops
+taking up room **on the recorder**. It still takes up the same room on the
+archive, for ever.
 
 ### 2. Where does the second copy live?
 
@@ -117,9 +124,7 @@ to be deleted against an empty folder.
 
 ### 3. What happens when the archive fills?
 
-Nothing in RepairCam prunes the archive — deliberately, because the archive is
-the copy that survives. When it fills, either somebody deletes from it by hand,
-or a policy is added. Worth deciding before it is urgent rather than after.
+This is the open one. See below.
 
 ---
 
@@ -188,6 +193,53 @@ unreadable it says *that* instead of "missing from disk", which would send
 somebody looking for footage that is fine on a disk that is merely unmounted.
 
 ---
+
+## Where the lifecycle stops
+
+Seven stages. Five are built, one has never run, and the last does not exist.
+
+| # | Stage | State |
+|---|---|---|
+| 1 | Record — segments per Start/Stop | **live** |
+| 2 | Join, label, sidecar, catalogue | **live** |
+| 3 | Copy to the archive, verified | built; never run against a real disk |
+| 4 | Remove the recorder's copy once its window passes | built; switched off |
+| 5 | Serve a removed clip from the archive, so its Odoo link still works | built |
+| 6 | **Remove anything from the archive** | **does not exist** |
+| 7 | **Take curated clips out for training / the AI dataset** | **does not exist** |
+
+Stages 1–5 make a loop that keeps the *recorder* healthy for ever. **They do not
+close the lifecycle**, because everything the shop films ends up in one place
+that nothing ever empties.
+
+### Stage 6 — the archive needs an end
+
+Three ways to give it one, and they are not exclusive:
+
+1. **By hand, on a reminder.** Once a quarter, somebody deletes the oldest month
+   from the archive. No code. Works, until the quarter somebody forgets.
+2. **A second retention pass at the archive** — the same rule `prune` already
+   applies locally, with a longer window and the same refusals: never a clip
+   marked keep, never one that has no third copy if there is one. This is the
+   natural extension, and the machinery for it already exists.
+3. **Tiering.** The archive holds the retention window; anything older that is
+   still wanted moves to something slower and cheaper — a second disk that lives
+   off-site and is plugged in occasionally.
+
+**Nothing here is urgent yet**, because the archive does not exist. It becomes
+urgent about a month after it does. Deciding it now costs an afternoon; deciding
+it when the archive is full costs whatever gets deleted in a hurry.
+
+### Stage 7 — clips that leave for a reason
+
+"Training" and "AI dataset" are in the project's purpose, and neither is served
+by footage sitting in an archive. Both imply somebody *selects* clips and takes
+them somewhere — a training folder, a labelled dataset.
+
+The **keep** flag is the beginning of that: it marks which clips matter. What
+does not exist is any way to get them out as a set. A clip and its sidecar are
+deliberately self-describing, so an export is a small piece of work — but it is
+work, and until it is done "keep" only means "do not delete", not "use this".
 
 ## What to do, in order
 
