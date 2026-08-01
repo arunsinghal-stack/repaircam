@@ -189,8 +189,9 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     store_cfg = storage.load_config()
     if store_cfg.archive_dir:
         archive = store_cfg.archive_path
-        add(archive.exists(), "archive reachable",
-            f"{archive}" if archive.exists() else f"{archive} is not there — is it mounted?")
+        there = storage.reachable(archive)
+        add(there, "archive reachable",
+            f"{archive}" if there else f"{archive} is not there — is it mounted?")
     else:
         add(False, "second copy of the footage",
             "No archive_dir in storage.yaml — this machine holds the ONLY copy of "

@@ -216,6 +216,12 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Second copy is LIVE (2026-08-01).** 3.7 TB Seagate, NTFS (it holds 355 GB of the shop's
   own tool files, so it was NOT reformatted), mounted by UUID from `/etc/fstab` at
   `/mnt/backup-drive`, `archive_dir: /mnt/backup-drive/RepairCam`. **Both deletions off.**
+  Mounted **on demand** (`noauto,x-systemd.automount`): a plain fstab entry only mounts at
+  boot, so unplugging and replugging left the shop on one copy until somebody mounted it by
+  hand. **That change also broke the status page**, and the fix matters beyond this drive:
+  `Path.exists()` swallows ENOENT and RE-RAISES anything else, and an unplugged autofs mount
+  answers **ENODEV**. Always use `storage.reachable()` — never `Path.exists()` — for the
+  archive, or "is the archive there?" becomes a 500 at the one moment it is asked.
   Notes: `archive_dir` is the SUBFOLDER, not the mount root — if the drive is unplugged the
   empty mount point still exists but the subfolder does not, so RepairCam correctly sees the
   archive as gone. NTFS after a power cut can mount read-only; the fix is

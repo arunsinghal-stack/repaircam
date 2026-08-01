@@ -723,3 +723,75 @@ def test_config_handed_straight_to_the_worker_wins(catalogue, tmp_path, archive)
 
     assert worker.cfg.keep_days_local == 12
     assert worker.reload_if_changed() is False  # already up to date
+
+
+# --------------------------------------------------------------------------
+# an unplugged on-demand mount raises; every caller must read that as "gone"
+# --------------------------------------------------------------------------
+
+
+class Unplugged:
+    """A path whose exists() raises ENODEV, like autofs with no drive behind it.
+
+    Path.exists() swallows "no such file" and re-raises everything else. With a
+    plain mount an absent drive gives the first; with x-systemd.automount it
+    gives ENODEV, and the status page answered a question about the archive
+    with a 500 — at the one moment that page has a job to do.
+    """
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def exists(self):
+        raise OSError(19, "No such device")
+
+    def resolve(self):
+        return self
+
+    def __truediv__(self, other):
+        return Unplugged(self._path / other)
+
+    def __str__(self):
+        return str(self._path)
+
+
+def test_a_raising_path_reads_as_not_there(tmp_path):
+    assert storage.reachable(tmp_path) is True
+    assert storage.reachable(tmp_path / "nope") is False
+    assert storage.reachable(None) is False
+    assert storage.reachable(Unplugged(tmp_path / "archive")) is False
+
+
+def test_the_status_of_an_unplugged_archive_does_not_raise(catalogue, monkeypatch, tmp_path):
+    """This is the regression. Asking "is the archive there?" must answer, not
+    explode — the answer is what the status page exists to show."""
+    cfg = StorageConfig(archive_dir=str(tmp_path / "archive"))
+    monkeypatch.setattr(
+        type(cfg), "archive_path",
+        property(lambda self: Unplugged(tmp_path / "archive")),
+    )
+
+    info = storage.status(catalogue, cfg)
+
+    assert info["archive_ready"] is False
+    assert info["archive_missing"] is True
+
+
+def test_an_unplugged_archive_is_refused_not_raised(catalogue, data_root, monkeypatch, tmp_path):
+    """And the same for the three passes. Refusing is already the correct
+    behaviour for a missing archive; it must not become a crash just because
+    the mount reports absence differently."""
+    cfg = StorageConfig(
+        archive_dir=str(tmp_path / "archive"),
+        delete_after_archive=True,
+        delete_from_archive=True,
+    )
+    monkeypatch.setattr(
+        type(cfg), "archive_path",
+        property(lambda self: Unplugged(tmp_path / "archive")),
+    )
+    make_clip(catalogue, data_root, days_old=999)
+
+    assert storage.archive_pending(catalogue, cfg, root=data_root).copied == []
+    assert storage.prune(catalogue, cfg, root=data_root).deleted == []
+    assert "mounted" in storage.prune_archive(catalogue, cfg, root=data_root).skipped_reason

@@ -352,7 +352,7 @@ def archive_pending(
     destination = cfg.archive_path
     if destination is None:
         return ArchiveResult([], [], "archiving is off — no archive_dir in storage.yaml")
-    if not destination.exists():
+    if not reachable(destination):
         # An unmounted NAS looks exactly like an empty directory that we would
         # happily "archive" into and then delete originals against. Refuse.
         return ArchiveResult(
@@ -362,7 +362,7 @@ def archive_pending(
     result = ArchiveResult([], [])
     for recording in catalogue.list_unarchived(limit=limit):
         source = root / recording.path
-        if not source.exists():
+        if not reachable(source):
             result.failed.append((recording.id, "the clip is missing from this disk"))
             continue
         try:
@@ -371,7 +371,7 @@ def archive_pending(
             # The sidecar travels with the clip. A clip without one is not a
             # dataset sample, it is a video file.
             side = sidecar_for(source)
-            if side.exists():
+            if reachable(side):
                 _copy_verified(side, sidecar_for(target))
             catalogue.mark_archived(recording.id, str(target))
             result.copied.append(recording.id)
@@ -391,6 +391,31 @@ def archive_pending(
 
 def _cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def reachable(path: Path | None) -> bool:
+    """Is this path there — treating EVERY filesystem error as "no"?
+
+    ``Path.exists()`` looks like it answers this and does not. It swallows
+    "no such file" and a couple of relatives, and **re-raises everything
+    else** — including ENODEV, which is exactly what an on-demand (autofs)
+    mount reports when the drive behind it has been unplugged. The status page
+    crashed with a 500 the first time somebody pulled the cable, which is the
+    one moment that page has a job to do.
+
+    Every failure means the same thing to every caller here: do not copy to it,
+    do not delete against it, and say it is not there. So the question is asked
+    once, in one place, and answered honestly.
+    """
+    if path is None:
+        return False
+    try:
+        return path.exists()
+    except OSError:
+        # A drive that is unplugged, a NAS that has gone away, a mount that is
+        # broken: not distinctions worth making when the answer is "leave the
+        # footage alone".
+        return False
 
 
 def _under(path: Path, root: Path) -> bool:
@@ -465,11 +490,11 @@ def prune(
 
     for recording in catalogue.list_archived_before(cutoff):
         source = root / recording.path
-        if not source.exists():
+        if not reachable(source):
             continue  # already gone; the row still says where it went
 
         archived = Path(recording.archive_path or "")
-        if not archived.exists():
+        if not reachable(archived):
             log.warning(
                 "clip %s says it was archived to %s, which is not there — keeping the "
                 "local copy", recording.id, archived,
@@ -552,7 +577,7 @@ def prune_archive(
                 "nothing expires from the archive — set delete_from_archive in storage.yaml"
             ),
         )
-    if not destination.exists():
+    if not reachable(destination):
         return PruneResult(
             [], skipped_reason=f"the archive at {destination} is not there — is the disk mounted?"
         )
@@ -591,7 +616,7 @@ def prune_archive(
 
         freed = 0
         try:
-            if resolved.exists():
+            if reachable(resolved):
                 freed = resolved.stat().st_size
                 resolved.unlink()
             sidecar_for(resolved).unlink(missing_ok=True)
@@ -602,7 +627,7 @@ def prune_archive(
         # The recorder's copy, if the local window was longer than this one.
         local = root / recording.path
         try:
-            if local.exists():
+            if reachable(local):
                 freed += local.stat().st_size
                 local.unlink()
             sidecar_for(local).unlink(missing_ok=True)
@@ -629,8 +654,8 @@ def status(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None)
     return {
         "disk": report.as_dict(),
         "config": cfg.describe(),
-        "archive_ready": bool(destination and destination.exists()),
-        "archive_missing": bool(destination and not destination.exists()),
+        "archive_ready": reachable(destination),
+        "archive_missing": bool(destination and not reachable(destination)),
         "unarchived": catalogue.count_unarchived(),
         "archived": catalogue.count_archived(),
         # Kept clips never expire, so they are the part of the archive that only

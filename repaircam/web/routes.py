@@ -89,14 +89,17 @@ def resolve_clip(recording) -> Path | None:
     local = (root / recording.path).resolve()
     if not _under(local, root):
         abort(400, "recording path is outside the data directory")
-    if local.exists():
+    if storage.reachable(local):
         return local
 
     archived = getattr(recording, "archive_path", "")
     if archived:
         allowed = storage.load_config().archive_path
         candidate = Path(archived).resolve()
-        if allowed and _under(candidate, allowed.resolve()) and candidate.exists():
+        # storage.reachable, not Path.exists: an unplugged on-demand mount
+        # raises rather than returning False, and a clip page must say "the
+        # archive is not readable" rather than return a 500.
+        if allowed and _under(candidate, allowed.resolve()) and storage.reachable(candidate):
             return candidate
     return None
 
@@ -308,7 +311,7 @@ def clip(recording_id: int):
         # Playing from the archive is worth saying: it means the clip has aged
         # off this machine and is being read from the other disk.
         from_archive=found is not None and found != local,
-        sidecar=read_sidecar(local if local.exists() else (found or local)),
+        sidecar=read_sidecar(local if storage.reachable(local) else (found or local)),
     )
 
 
