@@ -127,7 +127,7 @@ saar-seva is circular — there would be no way to make the first call. Same for
 address of the server holding the config.
 
 `link_base` stays local too, but for a different reason: it is a property of the
-*recorder* (its own LAN URL — `http://192.168.1.163:8080` today), not of a bench.
+*recorder* (its own LAN URL — `http://192.168.0.165:8080` today), not of a bench.
 Ten benches share one link_base; a central per-bench table is the wrong shape for it.
 
 So "central config" means **the camera list, and only the camera list**. Three lines

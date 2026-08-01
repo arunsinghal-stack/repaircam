@@ -97,7 +97,7 @@ staging.
 A technician presses Start on `/trc/time`. Then:
 
 - their screen shows a red **Recording** light beside the `⏱ running` pill
-- the bench page at `http://192.168.1.163:8080` shows the same
+- the bench page at `http://192.168.0.165:8080` shows the same
 - Stop ends the clip
 - the link appears in that job's Odoo chatter
 
@@ -210,5 +210,5 @@ Nothing here blocks going live. All of it is worth knowing on the day.
 | A bench never records | It has no `odoo_workcenter_id`, or `work_centers` in `saarseva.yaml` is excluding it. `/status` lists both under **Not auto-recording** |
 | A clip's link never reaches Odoo | `/status` → **Links that never reached Odoo** names the clip and the reason |
 
-The recorder's own status page is `http://192.168.1.163:8080/status`, and it is
+The recorder's own status page is `http://192.168.0.165:8080/status`, and it is
 the first place to look for all of these.

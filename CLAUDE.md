@@ -36,13 +36,26 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 
 ## Hardware (POC — frozen)
 - Recorder: existing **Linux i3 laptop** (8 GB RAM OK). POC uses a **single PoE injector** (no switch).
-  On the shop LAN at **192.168.1.163**; the web UI is `http://192.168.1.163:8080`, installed as
-  the `repaircam` systemd service (starts on boot). That URL is also what `link_base` must be
-  set to in `saarseva.yaml` when Phase 5 is switched on — the links posted to Odoo point at it.
+- **ADDRESSES MOVE — do not trust any address written here.** The shop network was renumbered
+  from `192.168.1.x` to `192.168.0.x` on 2026-08-01 with nobody touching RepairCam, and every
+  address in this file was wrong within a morning. Ask the box, do not read it:
+  `ip -4 addr` for the recorder, `cli cameras` for the cameras, and
+  `for i in $(seq 1 254); do ( timeout 1 bash -c "</dev/tcp/192.168.0.$i/554" 2>/dev/null && echo 192.168.0.$i ) & done; wait`
+  to find every camera on the LAN regardless of what is configured.
+  **The fix is DHCP reservations on the router** for the cameras and the recorder; until
+  that is done this will happen again.
+- As of 2026-08-01: recorder on Wi-Fi at **192.168.0.165** (`http://192.168.0.165:8080`),
+  installed as the `repaircam` systemd service (starts on boot). That URL is also what
+  `link_base` must be in `saarseva.yaml` — `cli preflight` now checks link_base against the
+  addresses this box really answers on, because a renumbering silently turned every link
+  posted to the Odoo chatter into a dead end.
 - Camera CHOSEN: **TP-Link VIGI C540V** (4MP, 3× optical zoom + autofocus, ONVIF/RTSP, PoE).
-  Live on the shop LAN at **192.168.1.184** (the shop is a `192.168.1.x` network; older notes
-  saying `192.168.0.133` are stale — test fixtures still use that as a dummy, which is fine).
-  Working RTSP: `rtsp://admin:<pass>@192.168.1.184:554/stream1` (main) / `/stream2` (sub).
+  **ONE camera exists in the shop** (verified by port-554 scan, 2026-08-01), at
+  `192.168.0.132`, **physically over the PACKING TABLE** and correctly mapped to the
+  Packing Station, Odoo work centre 13. There is no camera on any repair bench, so repair
+  auto-recording has nothing to film. Bench codes like `WC13` are RepairCam's own labels
+  derived from the Odoo work-centre id — `WC13` does NOT mean "bench 1" or "bench 13".
+  Working RTSP: `rtsp://admin:<pass>@192.168.0.132:554/stream1` (main) / `/stream2` (sub).
   Bench cam bitrate capped at 4096 kbps in the VIGI app; audio is `pcm_alaw` → must transcode to AAC for MP4.
 - Buying rule: **motorized varifocal only** (a lens focal RANGE like 2.8–12mm). A single mm number = fixed = reject.
 
@@ -174,13 +187,28 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   Stage 7 (exporting `keep`-marked clips as a training set) still does not exist.
 
 ## Going live (recorder cut over to PRODUCTION 2026-07-29; `preflight` all green)
-- Three benches configured — WC1, WC2, WC13 — all with an `odoo_workcenter_id`, all
-  answering. `base_url` is `https://saar-seva-api.onrender.com`; production has both
-  `REPAIRCAM_API_KEY` and the code. Disk back up to ~204 GB (~113 bench-hours).
+- `base_url` is `https://saar-seva-api.onrender.com`; production has both
+  `REPAIRCAM_API_KEY` and the code. Disk ~204 GB (~113 bench-hours).
+- **Three benches were configured on 2026-07-29 (WC1, WC2, WC13); by 2026-08-01 only the
+  packing camera remained.** The central list was saved with one camera in it, so the sync
+  deleted the other two — the design working as intended, but one bench then looks exactly
+  as healthy as three. A port-554 scan confirmed only one camera physically exists, so the
+  removal was correct and was acknowledged with `cli cameras --clear-removed`.
 - **Outstanding:** the camera password `Admin@321` was printed by a pre-flight run before
-  `redact_text()` existed, so it is in a terminal scrollback and a chat log — **rotate it
-  on all three cameras.** Also still true: no `archive_dir`, so this box holds the only
-  copy; and the power-cut behaviour has never been tested.
+  `redact_text()` existed, so it is in a terminal scrollback and a chat log — **rotate it.**
+  The power-cut behaviour has never been tested, and it must be before
+  `delete_after_archive` is switched on: archiving would faithfully copy a clip a power cut
+  had truncated. DHCP reservations are still not set on the router.
+- **Second copy is LIVE (2026-08-01).** 3.7 TB Seagate, NTFS (it holds 355 GB of the shop's
+  own tool files, so it was NOT reformatted), mounted by UUID from `/etc/fstab` at
+  `/mnt/backup-drive`, `archive_dir: /mnt/backup-drive/RepairCam`. **Both deletions off.**
+  Notes: `archive_dir` is the SUBFOLDER, not the mount root — if the drive is unplugged the
+  empty mount point still exists but the subfolder does not, so RepairCam correctly sees the
+  archive as gone. NTFS after a power cut can mount read-only; the fix is
+  `sudo ntfsfix /dev/sdX2`. The drive dropped off the USB bus once during setup and came
+  back as a different device name (`sdb` -> `sdc`), which is why the fstab entry uses the
+  UUID; watch for that recurring before trusting it. `mount -a` will stack a second mount on
+  top of a dead one — unmount in a loop until `findmnt` is empty, then `mount /mnt/backup-drive`.
 - **docs/GO-LIVE.md** is the runbook. `cli preflight` checks the whole thing from the
   recorder's side and says what to do about anything it finds — run it before believing
   the shop is ready.
