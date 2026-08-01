@@ -1,0 +1,247 @@
+# Central storage config — plan
+
+Set the retention windows from saar-seva's admin panel instead of editing
+`storage.yaml` over SSH, the same way the camera list already works.
+
+**PLAN — nothing built.** Written 2026-08-01, after the file below was created
+by hand on the shop recorder.
+
+---
+
+## The file today
+
+```yaml
+storage:
+  archive_dir: "/mnt/backup-drive/RepairCam"
+  keep_days_local: 5
+  keep_days: 30
+  keep_days_by_source:
+    repair: 30
+    packing: 45
+  delete_after_archive: false
+  delete_from_archive: false
+```
+
+Changing any of it means SSH, an editor, and `systemctl restart repaircam`.
+That is the wrong level of ceremony for "keep packing footage for 60 days
+instead of 45", which is a business decision the owner should be able to make.
+
+## The thing to get right first: not all of it should be central
+
+The file looks uniform. It is not. It holds two different kinds of setting, and
+syncing them centrally has opposite consequences.
+
+| Setting | Kind | Central? |
+|---|---|---|
+| `keep_days`, `keep_days_by_source` | **Shop policy** — how far back anyone can look | **Yes** |
+| `min_free_gb`, `warn_free_gb` | Shop policy, expressed in GB | Yes |
+| `archive_dir` | **This machine's mount path** | **Never** |
+| `keep_days_local` | **This machine's disk arithmetic** | **Never** |
+| `delete_after_archive` | Commissioning decision, once per box | No — see below |
+| `delete_from_archive` | The irreversible switch | No — see below |
+
+### Why `archive_dir` must never be central
+
+It is a path on one machine. A central value is wrong everywhere else by
+construction, and wrong in the worst possible way: **a path that does not exist
+looks exactly like an unplugged drive, and a path that exists but is not the
+drive looks exactly like a working archive.**
+
+That second failure is not hypothetical — it happened during setup on
+2026-08-01. `/mnt/backup-drive` existed as an empty folder while the drive was
+detached, and the next step would have written "backups" into the laptop's own
+disk under a name that says otherwise. It was caught only because a write test
+failed for an unrelated reason.
+
+A central `archive_dir` would let one admin, on one screen, silently turn every
+recorder's backup into a folder on its own boot disk. There is no version of
+that worth the convenience.
+
+### Why `keep_days_local` must never be central
+
+It is arithmetic, not policy: how many days of footage *this* disk holds. The
+204 GB recorder holds about five days of three benches. A central value of 30 —
+which is a perfectly sensible *policy* number — fills the disk by mid-week, at
+which point the free-space guard refuses Start and nothing is old enough to
+prune. Recording stops while the setting reads as correct.
+
+This is the exact confusion the two-window split was built to end. Putting one
+of the two windows on a shared screen next to the other would rebuild it.
+
+### Why the two delete switches stay local
+
+They are not policy, they are **statements about this machine**: that its
+archive has been proven, that a clip has been played back off it, that the
+power-cut behaviour is understood. `delete_after_archive` should be turned on by
+somebody standing at the box who has just checked those things.
+
+`delete_from_archive` is stronger still — it is the only setting in RepairCam
+that destroys footage with nothing behind it. Arming that from a web form, on a
+screen shared with whoever else holds the admin role, is not a trade worth
+making for saving one SSH session per machine lifetime.
+
+**Both stay in `storage.yaml`, and the central config may not contain them.**
+Not "defaults to off" — absent from the payload, and rejected if present.
+
+---
+
+## What the central half looks like
+
+### The payload
+
+```json
+{
+  "revision": 4,
+  "retention": {
+    "default_days": 30,
+    "by_source": { "repair": 30, "packing": 45 }
+  },
+  "free_space": { "min_gb": 20, "warn_gb": 50 }
+}
+```
+
+No paths, no switches, no secrets — so unlike the camera list this needs **no
+encryption at rest** and no `REPAIRCAM_CONFIG_KEY`.
+
+### It rides the existing poll
+
+Same mechanism as the camera list, for the same reasons (no write-back, works
+with more than one recorder, nothing to get stuck). `GET /trc/active` and
+`GET /pack/active` already carry `config_revision` for cameras; add a second
+integer beside it:
+
+```json
+{ "active": [ … ], "config_revision": 7, "storage_revision": 4 }
+```
+
+Steady state costs zero extra requests. When it moves, the recorder fetches
+`GET /repaircam/storage-config` once and rewrites the policy half of
+`storage.yaml`, preserving every local key it is not allowed to touch.
+
+### Writing the file
+
+The same discipline as `camerasync._write`: temp file, atomic rename, one
+`.bak`, and a header saying the file is machine-written. Local-only keys are
+read from the existing file and written back unchanged — the sync **merges**,
+it does not replace. A hand-edited `archive_dir` survives every sync forever.
+
+---
+
+## The dangerous change, and the guard
+
+Lengthening a window is safe: nothing is deleted, the archive grows.
+
+**Shortening one deletes footage**, and the first prune after the change does it
+all at once. Typing `4` instead of `45` in a web form is a plausible slip that,
+with `delete_from_archive` on, destroys six weeks of packing footage within ten
+minutes and cannot be undone.
+
+Three properties handle it, in order of importance:
+
+1. **Only the recorder knows the impact.** saar-seva has no idea how many clips
+   exist or how old they are — the catalogue is on the box. So the impact cannot
+   be shown at save time from the server's own knowledge, and any design that
+   pretends otherwise is guessing.
+
+2. **A shortening is staged, not applied.** When a sync reduces any window, the
+   recorder computes what the new window *would* delete — clip count, GB, and
+   the date of the oldest clip that would go — records it, and **does not
+   delete**. The status page and `cli storage` show:
+
+   > Retention for packing was shortened from 45 to 4 days. Applying it would
+   > delete 214 clips (380 GB), going back to 12 June. Nothing has been deleted.
+   > Confirm with `cli storage --accept-retention`, or set it back in the admin
+   > panel.
+
+   Lengthening applies immediately and silently. Only reductions stage.
+
+3. **The recorder reports its state upward** so the admin screen is not blind.
+   It already sends a heartbeat every poll; add free space, clip count, oldest
+   clip date and archive health to it. The panel then shows, per recorder,
+   what the shop actually holds — and a pending staged reduction, so the person
+   who typed `4` sees the consequence on the screen where they typed it.
+
+A floor is worth having too: refuse a window below **7 days** outright, with a
+message rather than a silent clamp. Nothing legitimate needs a shorter one, and
+`0` — which means "delete everything" — must never be reachable by a typo.
+
+---
+
+## Validation, recorder side
+
+Refuse the whole payload rather than half-apply, exactly as `camerasync` does:
+
+- every window is an integer ≥ 7
+- `min_gb` ≥ 5, `warn_gb` ≥ `min_gb`
+- no unknown keys — specifically, a payload containing `archive_dir`,
+  `keep_days_local`, `delete_after_archive` or `delete_from_archive` is
+  **rejected entirely**, not filtered. A server trying to set those is either a
+  version mismatch or something worse, and quietly ignoring the fields would
+  hide both.
+- an archive window shorter than this box's `keep_days_local` is accepted but
+  reported — the recorder would be asked to hold footage longer than the shop
+  wants it to exist. `StorageConfig.local_outlives_archive` already detects it.
+
+## One existing wart this forces us to fix
+
+`StorageWorker` reads the config **once**, at startup — which is why changing
+`storage.yaml` today needs `systemctl restart repaircam`. That is tolerable for
+a file somebody edits over SSH. It is not tolerable for a setting changed from a
+web panel, where nothing would appear to happen and the obvious conclusion is
+that the panel is broken.
+
+So the worker must re-read on change. Cheapest correct version: the sync writes
+the file and hands the new `StorageConfig` to the worker directly; the worker
+also re-reads if the file's mtime has moved, so a hand edit is picked up within
+one 10-minute pass without a restart.
+
+---
+
+## The admin screen
+
+Admin → TRC settings → **"Recording storage"**, beside "Cameras ↔ work centres",
+same `trc.manage` role.
+
+- Retention: one row per source (repair, packing) plus a default, in days
+- Free space: minimum and warning, in GB
+- Read-only, per recorder, from the heartbeat: free space, clips held, oldest
+  clip, archive reachable, and **whether deletion is switched on at all** —
+  because a shop reading "packing: 45 days" on this screen should not have to
+  guess that nothing is ever actually deleted
+- A banner when a recorder has a staged reduction waiting
+
+The read-only half is the part that earns its keep. The windows are three
+numbers; what the shop cannot see today is what those numbers are doing.
+
+---
+
+## Phasing
+
+Each phase is useful alone and safe to stop after.
+
+1. **Recorder reloads config without a restart.** Fixes today's wart, no
+   protocol change. Do this first regardless of whether the rest happens.
+2. **saar-seva: `SystemSetting` + `GET /repaircam/storage-config` +
+   `storage_revision` on both poll endpoints.**
+3. **Recorder: fetch, validate, merge-write, report.** Windows become central.
+   Local keys are untouched by construction.
+4. **The staging guard for reductions.** Before anyone can shorten a window in
+   anger — so realistically, before phase 3 ships to a shop with
+   `delete_from_archive` on.
+5. **Recorder state in the heartbeat, and the read-only half of the panel.**
+6. **The admin UI itself.**
+
+Phase 1 is worth doing this week. Phases 2–6 are worth doing when there is more
+than one recorder, or when somebody actually wants to change a window — which
+has not happened yet, and may not for months.
+
+## What this does not solve
+
+The shop has **one** recorder. Central config pays for itself at three or ten,
+where SSH-per-box stops scaling. At one box, `nano storage.yaml` is genuinely
+competitive, and the honest reason to build this is that changing retention
+should not require knowing what SSH is — not that it saves time.
+
+Worth weighing against the thing this same afternoon showed: there is no camera
+on any repair bench. Central storage config makes an existing capability easier
+to administer. A camera makes the shop record something it currently does not.
