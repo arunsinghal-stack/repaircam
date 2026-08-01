@@ -160,6 +160,18 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - Catalogue schema v2: `recordings.source` / `source_ref` say which integration a clip came
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
+
+## Central storage config (PLANNED, nothing built — docs/STORAGE-CONFIG-PLAN.md)
+- Retention windows from the admin panel, like the camera list. **Only the policy half.**
+  `archive_dir`, `keep_days_local` and both delete switches stay LOCAL, and a payload
+  containing them is rejected outright: a central mount path can silently turn a backup
+  into a folder on the boot disk, and a central `keep_days_local` rebuilds the
+  disk-vs-policy confusion the two-window split exists to end.
+- **Shortening a window deletes footage**, and only the recorder knows how much (the
+  catalogue is on the box), so a reduction is staged and reported — "would delete 214
+  clips, 380 GB, back to 12 June" — never applied on the sync.
+- Blocker regardless of the rest: `StorageWorker` reads its config once at startup, so a
+  panel change would appear to do nothing. Phase 1 is making it reload.
 - **Retention/archive (Phase 3, BUILT — the lifecycle is closed):** `storage.py`.
   Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
   is let through. Clips are copied to `archive_dir` and verified there.
