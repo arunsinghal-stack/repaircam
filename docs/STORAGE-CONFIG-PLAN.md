@@ -3,8 +3,9 @@
 Set the retention windows from saar-seva's admin panel instead of editing
 `storage.yaml` over SSH, the same way the camera list already works.
 
-**Phases 1-5 are BUILT (2026-08-01). Only phase 6 — the admin screen itself —
-is missing, so the endpoints exist and no browser calls them.** Written after
+**ALL SIX PHASES BUILT (2026-08-01). Nothing has run in the shop: the
+saar-seva half is on branch `claude/central-storage-config`, unmerged, and
+revision 0 means no recorder has been told anything.** Written after
 the file below was created by hand on the shop recorder.
 
 ---
@@ -256,7 +257,9 @@ Each phase is useful alone and safe to stop after.
    **BUILT 2026-08-01.** `storage.report()` rides the existing heartbeat;
    saar-seva stores it per recorder and marks anything over two minutes old as
    not fresh, server-side. The archive PATH is deliberately not reported.
-6. **The admin UI itself.**
+6. ~~**The admin UI itself.**~~ **BUILT 2026-08-01** — Admin -> TRC settings ->
+   "How long footage is kept", with each recorder's own report beside the
+   numbers so the page cannot overstate what the windows do.
 
 Phases 2–6 are worth doing when there is more than one recorder, or when
 somebody actually wants to change a window — which has not happened yet, and
