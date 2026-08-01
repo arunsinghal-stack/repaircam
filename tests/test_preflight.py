@@ -44,7 +44,7 @@ class FakeClient:
     def fetch_active(self, ids=None):
         return []
 
-    def post_heartbeat(self, benches):
+    def post_heartbeat(self, benches, storage=None):
         return True
 
     def fetch_camera_config(self):

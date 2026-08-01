@@ -620,6 +620,14 @@ class Catalogue:
                 (utcnow(), recording_id),
             )
 
+    def oldest_held(self) -> str:
+        """When the oldest footage the shop still has was recorded, or ""."""
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT MIN(started_at) AS oldest FROM recordings WHERE archive_deleted = 0"
+            ).fetchone()
+        return row["oldest"] or ""
+
     def count_archive_deleted(self) -> int:
         with self.connect() as conn:
             return int(conn.execute(

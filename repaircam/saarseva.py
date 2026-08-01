@@ -496,7 +496,7 @@ class SaarSevaClient:
             )
         return payload
 
-    def post_heartbeat(self, benches: list[dict]) -> bool:
+    def post_heartbeat(self, benches: list[dict], storage: dict | None = None) -> bool:
         """Tell saar-seva what each bench's camera is ACTUALLY doing.
 
         saar-seva cannot see into the shop, so without this its technician
@@ -510,11 +510,18 @@ class SaarSevaClient:
         saar-seva must treat a heartbeat it has not heard for a few polls as
         "unknown", never as the last state it saw.
         """
-        self._request(
-            "POST",
-            "/trc/recorder-heartbeat",
-            body={"recorder": self.config.link_base, "benches": benches},
-        )
+        body = {"recorder": self.config.link_base, "benches": benches}
+        if storage:
+            # What this recorder actually holds — free space, clip counts, how
+            # far back the shop can really look, and whether anything is ever
+            # deleted at all. An admin panel that can set a retention window
+            # without this is guessing: the footage and the catalogue are both
+            # on the recorder, and nothing else can answer for them.
+            #
+            # An older saar-seva ignores the extra field, which is why this
+            # rides the heartbeat rather than needing an endpoint of its own.
+            body["storage"] = storage
+        self._request("POST", "/trc/recorder-heartbeat", body=body)
         return True
 
     def check(self, workcenter_ids: list[int] | None = None) -> tuple[bool, str]:

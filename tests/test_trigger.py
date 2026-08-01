@@ -52,6 +52,8 @@ class FakeClient:
         self.asked_for = None
         #: Every heartbeat body the trigger sent.
         self.heartbeats: list[list[dict]] = []
+        #: The storage report that rode along with each heartbeat.
+        self.storage_reports: list[dict | None] = []
         self.heartbeat_fail_with: str | None = None
         self.heartbeat_fail_status: int | None = None
         #: Camera-list revision the real client would have read off a poll.
@@ -98,10 +100,11 @@ class FakeClient:
             raise SaarSevaError(self.packing_fail_with, status=self.packing_fail_status)
         return list(self.active_packing)
 
-    def post_heartbeat(self, benches):
+    def post_heartbeat(self, benches, storage=None):
         if self.heartbeat_fail_with:
             raise SaarSevaError(self.heartbeat_fail_with, status=self.heartbeat_fail_status)
         self.heartbeats.append(benches)
+        self.storage_reports.append(storage)
         return True
 
     def _maybe_fail(self, recording):
@@ -1230,3 +1233,51 @@ def test_the_worker_is_handed_the_new_policy_immediately(trigger, client, store,
     trigger.tick()
 
     assert worker.cfg.keep_days_for("packing") == 60
+
+
+def test_the_heartbeat_carries_what_this_recorder_holds(trigger, client, store):
+    """An admin panel that can set a retention window without this is guessing:
+    the footage and the catalogue are both on the recorder."""
+    client.active = [op(12)]
+    trigger.tick()
+
+    report = client.storage_reports[-1]
+    assert report is not None
+    assert report["archive_configured"] is True
+    assert report["delete_from_archive"] is False   # nothing is ever deleted here
+    assert report["keep_days_local"] == 5
+    assert "free_gb" in report and "clips" in report
+
+
+def test_the_report_never_names_the_archive_path(trigger, client, store):
+    """The panel needs to know a second copy exists and is reachable. Where it
+    is mounted is this machine's business and no use to anyone remote."""
+    report = (trigger.tick(), client.storage_reports[-1])[1]
+    assert "/mnt/backup-drive" not in str(report)
+    assert "archive_dir" not in report
+
+
+def test_a_held_reduction_is_reported_upward(trigger, client, store, catalogue):
+    """It is the consequence of something typed on that screen, so it belongs
+    back on that screen."""
+    storage_module.note_window_changes(catalogue, storage_module.load_config(store))
+    store.write_text(store.read_text() + "  keep_days: 9\n")
+    storage_module.note_window_changes(catalogue, storage_module.load_config(store))
+
+    trigger.tick()
+
+    hold = client.storage_reports[-1]["retention_hold"]
+    assert hold["changes"] == [{"source": "", "from": 30, "to": 9}]
+
+
+def test_a_broken_catalogue_read_does_not_cost_the_bench_lights(trigger, client, monkeypatch):
+    """The lights are what a technician looks at. A storage report is not worth
+    one of them."""
+    monkeypatch.setattr(
+        storage_module, "report",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    trigger.tick()
+
+    assert client.heartbeats            # the lights still went
+    assert client.storage_reports[-1] is None

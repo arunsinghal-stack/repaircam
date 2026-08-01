@@ -3,8 +3,8 @@
 Set the retention windows from saar-seva's admin panel instead of editing
 `storage.yaml` over SSH, the same way the camera list already works.
 
-**Phases 1-4 are BUILT (2026-08-01); 5 and 6 are not started, so there is no
-admin screen yet — the endpoints exist and nothing calls them.** Written after
+**Phases 1-5 are BUILT (2026-08-01). Only phase 6 — the admin screen itself —
+is missing, so the endpoints exist and no browser calls them.** Written after
 the file below was created by hand on the shop recorder.
 
 ---
@@ -252,7 +252,10 @@ Each phase is useful alone and safe to stop after.
    opening it to change a number needs to know which of their edits survives.
 4. ~~**The staging guard for reductions.**~~ **BUILT 2026-08-01**, ahead of
    2 and 3: the same risk already exists through a hand edit to storage.yaml.
-5. **Recorder state in the heartbeat, and the read-only half of the panel.**
+5. ~~**Recorder state in the heartbeat, and the read-only half of the panel.**~~
+   **BUILT 2026-08-01.** `storage.report()` rides the existing heartbeat;
+   saar-seva stores it per recorder and marks anything over two minutes old as
+   not fresh, server-side. The archive PATH is deliberately not reported.
 6. **The admin UI itself.**
 
 Phases 2–6 are worth doing when there is more than one recorder, or when

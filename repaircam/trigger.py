@@ -645,8 +645,18 @@ class Trigger:
         if not benches:
             return
 
+        # Best-effort, and separately so: a catalogue read failing must not
+        # cost the shop its bench lights.
+        report = None
         try:
-            self.client.post_heartbeat(benches)
+            from . import storage as storage_module
+
+            report = storage_module.report(self.catalogue)
+        except Exception as exc:
+            log.debug("no storage report this tick: %s", exc)
+
+        try:
+            self.client.post_heartbeat(benches, report)
         except SaarSevaError as exc:
             # Never fatal — a light on a screen does not outrank filming the
             # work. But it must be VISIBLE: a heartbeat failing quietly is

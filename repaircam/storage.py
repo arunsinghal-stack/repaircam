@@ -817,6 +817,53 @@ def status(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None)
         # A shortened window, staged and waiting. Nothing has been deleted, and
         # nothing will be until it is answered.
         "retention_hold": retention_hold(catalogue),
+        "oldest": catalogue.oldest_held(),
+    }
+
+
+def report(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None) -> dict:
+    """What this recorder holds, small enough to ride a heartbeat.
+
+    For an admin screen that would otherwise be guessing. Somebody setting
+    "packing: 45 days" in a browser is entitled to know whether the recorder
+    has an archive at all, whether anything is ever actually deleted, and how
+    far back the shop can really look — none of which the server can know,
+    because the footage and the catalogue are both on this box.
+
+    **The archive PATH is deliberately not in here.** The screen needs to know
+    that a second copy exists and is reachable; where it is mounted is this
+    machine's business and no use to anyone remote.
+    """
+    cfg = cfg or load_config()
+    catalogue = catalogue or Catalogue()
+    disk = disk_report(cfg)
+    hold = retention_hold(catalogue)
+
+    return {
+        "free_gb": disk.free_gb,
+        "total_gb": disk.total_gb,
+        "disk_state": disk.state,
+        "clips": catalogue.count(),
+        "archived": catalogue.count_archived(),
+        "unarchived": catalogue.count_unarchived(),
+        "kept": catalogue.count_kept(),
+        "expired": catalogue.count_archive_deleted(),
+        "oldest": catalogue.oldest_held(),
+        "archive_configured": bool(cfg.archive_dir),
+        "archive_ready": reachable(cfg.archive_path),
+        # Whether anything is EVER deleted. A panel showing "packing: 45 days"
+        # beside a recorder that deletes nothing is telling half a story.
+        "delete_after_archive": cfg.delete_after_archive,
+        "delete_from_archive": cfg.delete_from_archive,
+        "keep_days_local": cfg.keep_days_local,
+        # The windows actually in force here, which is not necessarily what was
+        # last saved centrally — a refused or unfetched policy leaves the old
+        # ones running, and only this says so.
+        "keep_days": cfg.keep_days,
+        "keep_days_by_source": dict(cfg.keep_days_by_source),
+        # A shortening waiting for a person. The one thing the panel most needs
+        # to show, since it is the consequence of something typed there.
+        "retention_hold": hold,
     }
 
 
