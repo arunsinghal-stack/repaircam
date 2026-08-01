@@ -67,6 +67,12 @@ storage:
   # Set to this shop's own windows. Getting these WRONG in the short direction
   # cannot be undone: the footage is gone, and it is gone for exactly the jobs
   # old enough that somebody is now arguing about them.
+  #
+  # MAKING ONE SHORTER IS HELD, NOT APPLIED. RepairCam works out what the new
+  # window would delete and stops the archive clean-up until you agree:
+  #     python3 -m repaircam.cli storage --accept-retention
+  # Putting the number back instead costs nothing. Making a window LONGER
+  # applies straight away — nothing is destroyed by keeping footage.
   keep_days_by_source:
     repair: 30
     packing: 45

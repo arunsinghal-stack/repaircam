@@ -168,8 +168,12 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   into a folder on the boot disk, and a central `keep_days_local` rebuilds the
   disk-vs-policy confusion the two-window split exists to end.
 - **Shortening a window deletes footage**, and only the recorder knows how much (the
-  catalogue is on the box), so a reduction is staged and reported — "would delete 214
-  clips, 380 GB, back to 12 June" — never applied on the sync.
+  catalogue is on the box). **BUILT (phase 4, ahead of the rest):** any reduction of an
+  ARCHIVE window — by hand today, by a sync later — is staged with its cost ("would delete
+  214 clips, 380 GB, back to 12 June"), `prune_archive` refuses to run until it is answered
+  (`cli storage --accept-retention`, or put the window back), and the baseline lives in the
+  catalogue so an edit made while the service was stopped is still caught. `keep_days_local`
+  is never staged — shortening it only removes copies that are verifiably archived.
 - Blocker regardless of the rest: `StorageWorker` reads its config once at startup, so a
   panel change would appear to do nothing. Phase 1 is making it reload.
 - **Retention/archive (Phase 3, BUILT — the lifecycle is closed):** `storage.py`.

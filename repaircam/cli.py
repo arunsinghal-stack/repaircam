@@ -813,6 +813,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="copy clips that have no second copy yet")
     p.add_argument("--prune", action="store_true",
                    help="delete local clips that are old AND verified at the archive")
+    p.add_argument("--accept-retention", action="store_true",
+                   help="agree to a shortened retention window, and let that footage go")
     p.add_argument("--limit", type=int, default=20,
                    help="how many clips to archive in one run (default: %(default)s)")
     p.set_defaults(func=cmd_storage)

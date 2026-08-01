@@ -795,3 +795,157 @@ def test_an_unplugged_archive_is_refused_not_raised(catalogue, data_root, monkey
     assert storage.archive_pending(catalogue, cfg, root=data_root).copied == []
     assert storage.prune(catalogue, cfg, root=data_root).deleted == []
     assert "mounted" in storage.prune_archive(catalogue, cfg, root=data_root).skipped_reason
+
+
+# --------------------------------------------------------------------------
+# shortening a window is staged, not obeyed
+# --------------------------------------------------------------------------
+
+
+def held_cfg(archive: Path, **kw) -> StorageConfig:
+    base = dict(
+        archive_dir=str(archive),
+        keep_days=30,
+        keep_days_by_source={"repair": 30, "packing": 45},
+        delete_from_archive=True,
+    )
+    base.update(kw)
+    return StorageConfig(**base)
+
+
+def test_lengthening_a_window_is_not_held(catalogue, archive):
+    """Nothing is destroyed by keeping footage longer, so it applies at once."""
+    storage.note_window_changes(catalogue, held_cfg(archive))
+    longer = held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 60})
+
+    assert storage.note_window_changes(catalogue, longer) == {}
+    assert storage.retention_hold(catalogue) == {}
+
+
+def test_shortening_a_window_is_held_with_its_cost(catalogue, data_root, archive):
+    """'45' typed as '4' is an ordinary slip. It must not be obeyed within ten
+    minutes by something that cannot be undone."""
+    cfg = held_cfg(archive)
+    storage.note_window_changes(catalogue, cfg)
+    for name, age in (("p1.mp4", 50), ("p2.mp4", 20), ("p3.mp4", 2)):
+        clip = make_sourced(catalogue, data_root, name=name, days_old=age, source="packing")
+        storage.archive_pending(catalogue, cfg, root=data_root, limit=9)
+        assert catalogue.get(clip.id).archived_at
+
+    hold = storage.note_window_changes(
+        catalogue, held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 4})
+    )
+
+    assert hold["changes"] == [{"source": "packing", "from": 45, "to": 4}]
+    assert hold["clips"] == 2          # the 50- and 20-day-old ones
+    assert hold["bytes"] > 0
+    assert hold["oldest"]
+    assert "would delete 2 clip(s)" in storage.hold_summary(hold)
+
+
+def test_the_archive_pass_refuses_while_a_reduction_is_held(catalogue, data_root, archive):
+    """The last gate before footage stops existing, and the one a caller
+    cannot forget to ask."""
+    cfg = held_cfg(archive)
+    storage.note_window_changes(catalogue, cfg)
+    clip = make_sourced(catalogue, data_root, name="old.mp4", days_old=50, source="packing")
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    short = held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 4})
+    storage.note_window_changes(catalogue, short)
+    result = storage.prune_archive(catalogue, short, root=data_root)
+
+    assert result.deleted == []
+    assert "Nothing has been deleted" in result.skipped_reason
+    assert (archive / clip.path).exists()
+
+
+def test_accepting_the_reduction_lets_it_run(catalogue, data_root, archive):
+    cfg = held_cfg(archive)
+    storage.note_window_changes(catalogue, cfg)
+    clip = make_sourced(catalogue, data_root, name="old.mp4", days_old=50, source="packing")
+    storage.archive_pending(catalogue, cfg, root=data_root)
+    short = held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 4})
+    storage.note_window_changes(catalogue, short)
+
+    accepted = storage.accept_retention(catalogue)
+
+    assert accepted["changes"][0]["to"] == 4
+    assert storage.prune_archive(catalogue, short, root=data_root).deleted == [clip.id]
+
+
+def test_putting_the_window_back_clears_the_hold(catalogue, archive):
+    """The other way out, and the one that costs nothing."""
+    storage.note_window_changes(catalogue, held_cfg(archive))
+    storage.note_window_changes(
+        catalogue, held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 4})
+    )
+    assert storage.retention_hold(catalogue)
+
+    storage.note_window_changes(catalogue, held_cfg(archive))
+
+    assert storage.retention_hold(catalogue) == {}
+
+
+def test_a_reduction_in_steps_is_measured_from_the_longest(catalogue, archive):
+    """45 -> 20 -> 4, with nobody accepting anything, is still a reduction from
+    45. Comparing only against the last value would let the rest through."""
+    storage.note_window_changes(catalogue, held_cfg(archive))
+    storage.note_window_changes(
+        catalogue, held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 20})
+    )
+    hold = storage.note_window_changes(
+        catalogue, held_cfg(archive, keep_days_by_source={"repair": 30, "packing": 4})
+    )
+
+    assert hold["changes"] == [{"source": "packing", "from": 45, "to": 4}]
+
+
+def test_the_fallback_window_is_held_too(catalogue, data_root, archive):
+    """Clips started by hand belong to no integration and expire on keep_days."""
+    cfg = held_cfg(archive)
+    storage.note_window_changes(catalogue, cfg)
+    make_clip(catalogue, data_root, name="byhand.mp4", days_old=25)
+    storage.archive_pending(catalogue, cfg, root=data_root)
+
+    hold = storage.note_window_changes(catalogue, held_cfg(archive, keep_days=5))
+
+    assert hold["changes"] == [{"source": "", "from": 30, "to": 5}]
+    assert hold["clips"] == 1
+    assert "clips started by hand" in storage.hold_summary(hold)
+
+
+def test_the_recorders_own_window_is_never_held(catalogue, archive):
+    """Shortening keep_days_local removes copies that are verifiably archived.
+    Nothing is lost, so it needs no ceremony."""
+    storage.note_window_changes(catalogue, held_cfg(archive, keep_days_local=7))
+
+    changed = storage.note_window_changes(catalogue, held_cfg(archive, keep_days_local=2))
+
+    assert changed == {}
+    assert storage.retention_hold(catalogue) == {}
+
+
+def test_the_first_config_ever_seen_is_not_a_reduction(catalogue, archive):
+    """Otherwise every fresh install would start held."""
+    assert storage.note_window_changes(catalogue, held_cfg(archive)) == {}
+
+
+def test_an_edit_made_while_the_service_was_stopped_is_still_caught(catalogue, tmp_path, archive):
+    """The worker compares against what the catalogue remembers, not against
+    what it happened to read at startup — otherwise editing the file with the
+    service off would slip a reduction straight through."""
+    path = write_config(
+        tmp_path / "storage.yaml",
+        f"  archive_dir: {archive}\n  keep_days: 30\n  delete_from_archive: true\n",
+    )
+    first = storage.StorageWorker(catalogue, config_path=path)
+    assert storage.retention_hold(catalogue) == {}
+    first.stop()
+
+    write_config(
+        path, f"  archive_dir: {archive}\n  keep_days: 5\n  delete_from_archive: true\n"
+    )
+    storage.StorageWorker(catalogue, config_path=path)   # a fresh start, as after a reboot
+
+    assert storage.retention_hold(catalogue)["changes"][0]["to"] == 5

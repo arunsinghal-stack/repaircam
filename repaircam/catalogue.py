@@ -525,6 +525,36 @@ class Catalogue:
             rows = conn.execute("\n".join(sql), params).fetchall()
         return [self._to_recording(row) for row in rows]
 
+    @staticmethod
+    def _archive_expired_where(
+        cutoff_iso: str,
+        source: str | None,
+        exclude_sources: list[str] | None,
+    ) -> tuple[str, list]:
+        """The one definition of "this footage may be destroyed".
+
+        Shared by the pass that deletes and the count that says how much a
+        window would cost, so the warning and the deletion can never disagree
+        about which clips are in scope — which would be the worst possible
+        thing for a warning to be wrong about.
+
+        keep = 0 lives here, in the SQL, not in the caller: this is the delete
+        that cannot be undone by fetching the file from somewhere else.
+        """
+        sql = [
+            " WHERE archived_at != '' AND archive_deleted = 0 AND keep = 0",
+            "   AND started_at < ?",
+        ]
+        params: list = [cutoff_iso]
+        if source is not None:
+            sql.append("   AND source = ?")
+            params.append(source)
+        if exclude_sources:
+            marks = ",".join("?" for _ in exclude_sources)
+            sql.append(f"   AND source NOT IN ({marks})")
+            params.extend(exclude_sources)
+        return "\n".join(sql), params
+
     def list_archive_expired(
         self,
         cutoff_iso: str,
@@ -542,28 +572,39 @@ class Catalogue:
         removed from it, and must not be marked keep. Nothing here depends on
         whether the local copy survives; that is the caller's business.
         """
-        sql = [
-            "SELECT * FROM recordings",
-            # keep = 0 lives in the SQL, not in the caller, for the same reason
-            # as in list_archived_before — only more so. This is the delete that
-            # cannot be undone by fetching the file from somewhere else.
-            " WHERE archived_at != '' AND archive_deleted = 0 AND keep = 0",
-            "   AND started_at < ?",
-        ]
-        params: list = [cutoff_iso]
-        if source is not None:
-            sql.append("   AND source = ?")
-            params.append(source)
-        if exclude_sources:
-            marks = ",".join("?" for _ in exclude_sources)
-            sql.append(f"   AND source NOT IN ({marks})")
-            params.extend(exclude_sources)
-        sql.append(" ORDER BY id ASC LIMIT ?")
-        params.append(limit)
-
+        where, params = self._archive_expired_where(cutoff_iso, source, exclude_sources)
         with self.connect() as conn:
-            rows = conn.execute("\n".join(sql), params).fetchall()
+            rows = conn.execute(
+                f"SELECT * FROM recordings\n{where}\n ORDER BY id ASC LIMIT ?",
+                [*params, limit],
+            ).fetchall()
         return [self._to_recording(row) for row in rows]
+
+    def archive_expiry_impact(
+        self,
+        cutoff_iso: str,
+        *,
+        source: str | None = None,
+        exclude_sources: list[str] | None = None,
+    ) -> dict:
+        """How much footage a window would end: clips, bytes, and how far back.
+
+        Not limited to a page like ``list_archive_expired`` — a warning that
+        says "200 clips" because that is the page size, when the real number is
+        two thousand, is worse than no warning.
+        """
+        where, params = self._archive_expired_where(cutoff_iso, source, exclude_sources)
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS clips, COALESCE(SUM(size_bytes), 0) AS bytes,"
+                " MIN(started_at) AS oldest FROM recordings\n" + where,
+                params,
+            ).fetchone()
+        return {
+            "clips": row["clips"] or 0,
+            "bytes": row["bytes"] or 0,
+            "oldest": row["oldest"] or "",
+        }
 
     def mark_archive_deleted(self, recording_id: int) -> None:
         """The footage is gone from the world, and the date it went.

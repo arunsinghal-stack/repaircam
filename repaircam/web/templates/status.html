@@ -106,6 +106,29 @@
         the archive only grows.
       {% endif %}
     </div>
+    {% if store.retention_hold %}
+      {# The one change here that destroys footage. It is held, not applied,
+         and this is where the shop finds out it is waiting. #}
+      <div class="err small">
+        <b>A retention window was shortened and is NOT in force.</b>
+        {% for change in store.retention_hold.changes %}
+          {{ change.source or 'Clips started by hand' }}:
+          {{ change.from }} &rarr; {{ change.to }} days{% if not loop.last %};{% endif %}
+        {% endfor %}
+        <div>Applying it would delete
+          <b>{{ store.retention_hold.clips }} clip{{ '' if store.retention_hold.clips == 1 else 's' }}</b>
+          ({{ (store.retention_hold.bytes / 1073741824)|round(1) }} GB)
+          {%- if store.retention_hold.oldest %}, back to
+          {{ store.retention_hold.oldest[:10] }}{% endif %}.
+          <b>Nothing has been deleted.</b>
+        </div>
+        <div class="muted small">
+          The archive pass is stopped until this is answered. Put the window back in
+          <code>storage.yaml</code>, or accept it with
+          <code>python3 -m repaircam.cli storage --accept-retention</code>.
+        </div>
+      </div>
+    {% endif %}
     {% if store.expired %}
       <div class="muted small">{{ store.expired }} clip{{ '' if store.expired == 1 else 's' }}
       past the window &mdash; the footage no longer exists.</div>

@@ -406,3 +406,28 @@ def test_a_current_archive_error_is_not_softened(client, app, tmp_path, monkeypa
 
     assert "reachable again now" not in page
     assert 'class="err small"' in page
+
+
+def test_a_held_retention_reduction_is_on_the_status_page(client, app, tmp_path, monkeypatch):
+    """The one change that destroys footage. It is held, not applied, and this
+    is where the shop finds out it is waiting."""
+    _configure_storage(app, tmp_path, monkeypatch, (
+        "  keep_days: 30\n  delete_from_archive: true\n"
+        "  keep_days_by_source:\n    repair: 30\n    packing: 45\n"
+    ))
+    cat = app.extensions["catalogue"]
+    storage.note_window_changes(cat, storage.load_config())
+    short = tmp_path / "short.yaml"
+    short.write_text(
+        f"storage:\n  archive_dir: {tmp_path / 'archive'}\n  keep_days: 30\n"
+        "  delete_from_archive: true\n"
+        "  keep_days_by_source:\n    repair: 30\n    packing: 4\n"
+    )
+    storage.note_window_changes(cat, storage.load_config(short))
+
+    page = client.get("/status").data.decode()
+
+    assert "was shortened and is NOT in force" in page
+    assert "45" in page and "4 days" in page
+    assert "Nothing has been deleted" in page
+    assert "--accept-retention" in page

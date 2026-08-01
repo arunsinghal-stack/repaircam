@@ -35,6 +35,7 @@ is the one that costs footage.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -45,7 +46,7 @@ from pathlib import Path
 import yaml
 
 from . import config
-from .catalogue import Catalogue, Recording, sidecar_for
+from .catalogue import Catalogue, Recording, sidecar_for, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -393,6 +394,138 @@ def _cutoff(days: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
 
+# --------------------------------------------------------------------------
+# Shortening a window: staged, never applied on the spot
+# --------------------------------------------------------------------------
+#
+# Lengthening a retention window is safe — nothing is deleted, the archive
+# grows. Shortening one destroys footage, all of it at once, on the next pass.
+# "45" typed as "4" is an ordinary slip that would end six weeks of packing
+# footage within ten minutes, and there is no third copy to get it back from.
+#
+# So a reduction is recorded rather than obeyed, together with what it would
+# cost, and prune_archive refuses to run until somebody says yes. Only the
+# recorder can compute that cost, because the catalogue is on the box — which
+# is also why this cannot live in whatever screen the number was typed on.
+
+#: Catalogue key: the windows in force at the last config we accepted. Kept in
+#: the database, not in memory, so an edit made while the service was stopped
+#: is still compared against something.
+WINDOWS_KEY = "retention_windows"
+
+#: Catalogue key: a reduction waiting to be accepted.
+HOLD_KEY = "retention_reduction_pending"
+
+
+def windows_of(cfg: StorageConfig) -> dict:
+    """The archive windows, as {source: days}. "" is the fallback window.
+
+    Only ARCHIVE windows. ``keep_days_local`` is deliberately absent: shortening
+    it removes the recorder's copy of clips that are verifiably archived, which
+    costs nothing and needs no ceremony.
+    """
+    windows = {"": int(cfg.keep_days)}
+    windows.update({str(k): int(v) for k, v in cfg.keep_days_by_source.items()})
+    return windows
+
+
+def _impact(catalogue: Catalogue, cfg: StorageConfig, entries: list[dict]) -> dict:
+    """What applying these shortened windows would destroy, right now."""
+    named = sorted(cfg.keep_days_by_source)
+    clips = total = 0
+    oldest = ""
+    for entry in entries:
+        source = entry["source"]
+        scope = (
+            {"source": source} if source
+            else {"exclude_sources": named or None}
+        )
+        found = catalogue.archive_expiry_impact(_cutoff(entry["to"]), **scope)
+        clips += found["clips"]
+        total += found["bytes"]
+        if found["oldest"] and (not oldest or found["oldest"] < oldest):
+            oldest = found["oldest"]
+    return {"clips": clips, "bytes": total, "oldest": oldest}
+
+
+def note_window_changes(catalogue: Catalogue, cfg: StorageConfig) -> dict:
+    """Record the current windows, and stage any shortening. Returns the hold.
+
+    Called every time a config is adopted — at startup as well as on reload,
+    because a file edited while the service was stopped is exactly as dangerous
+    as one edited while it was running, and rather easier to do by accident.
+    """
+    current = windows_of(cfg)
+    previous = _read_json(catalogue, WINDOWS_KEY)
+    hold = _read_json(catalogue, HOLD_KEY)
+    entries = {e["source"]: e for e in hold.get("changes", [])}
+
+    if previous:
+        for source in set(previous) | set(current):
+            before = int(previous.get(source, cfg.keep_days))
+            after = int(current.get(source, cfg.keep_days))
+            # Compare against the LONGEST window this source is known to have
+            # had, not merely the last one. Otherwise 45 -> 20 -> 4, accepted
+            # once in the middle, would slip the rest through unremarked.
+            baseline = max(before, int(entries[source]["from"])) if source in entries else before
+            if after < baseline:
+                entries[source] = {"source": source, "from": baseline, "to": after}
+            else:
+                entries.pop(source, None)  # put back, or lengthened: no hold
+
+    catalogue.set_setting(WINDOWS_KEY, json.dumps(current))
+
+    if not entries:
+        if hold:
+            catalogue.set_setting(HOLD_KEY, "")
+            log.info("retention hold cleared — the windows are no shorter than before")
+        return {}
+
+    changes = [entries[key] for key in sorted(entries)]
+    hold = {"at": utcnow(), "changes": changes, **_impact(catalogue, cfg, changes)}
+    catalogue.set_setting(HOLD_KEY, json.dumps(hold))
+    log.warning("retention SHORTENED and held: %s", hold_summary(hold))
+    return hold
+
+
+def retention_hold(catalogue: Catalogue | None = None) -> dict:
+    """A shortened window waiting to be accepted, or {}."""
+    return _read_json(catalogue or Catalogue(), HOLD_KEY)
+
+
+def accept_retention(catalogue: Catalogue | None = None) -> dict:
+    """Say yes to the staged reduction. Returns what was accepted."""
+    catalogue = catalogue or Catalogue()
+    hold = _read_json(catalogue, HOLD_KEY)
+    catalogue.set_setting(HOLD_KEY, "")
+    if hold:
+        log.warning("retention reduction ACCEPTED: %s", hold_summary(hold))
+    return hold
+
+
+def hold_summary(hold: dict) -> str:
+    """One sentence a person can act on, with the cost in it."""
+    if not hold:
+        return ""
+    parts = [
+        f"{entry['source'] or 'clips started by hand'} {entry['from']} -> {entry['to']} days"
+        for entry in hold.get("changes", [])
+    ]
+    gb = hold.get("bytes", 0) / 1_073_741_824
+    cost = f"{hold.get('clips', 0)} clip(s), {gb:.1f} GB"
+    if hold.get("oldest"):
+        cost += f", back to {hold['oldest'][:10]}"
+    return f"retention shortened ({'; '.join(parts)}) — applying it would delete {cost}"
+
+
+def _read_json(catalogue: Catalogue, key: str) -> dict:
+    try:
+        raw = catalogue.get_setting(key, "")
+        return json.loads(raw) if raw else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def reachable(path: Path | None) -> bool:
     """Is this path there — treating EVERY filesystem error as "no"?
 
@@ -582,6 +715,20 @@ def prune_archive(
             [], skipped_reason=f"the archive at {destination} is not there — is the disk mounted?"
         )
 
+    # A window that was made shorter has not been agreed to yet. Refusing here,
+    # rather than at the point the setting changed, is deliberate: this is the
+    # last gate before footage stops existing, and it is the only one that
+    # cannot be bypassed by a caller who forgot.
+    hold = retention_hold(catalogue)
+    if hold:
+        return PruneResult(
+            [],
+            skipped_reason=(
+                f"{hold_summary(hold)}. Nothing has been deleted — accept it with "
+                "`cli storage --accept-retention`, or put the window back."
+            ),
+        )
+
     allowed = destination.resolve()
     result = PruneResult([])
 
@@ -667,6 +814,9 @@ def status(catalogue: Catalogue | None = None, cfg: StorageConfig | None = None)
         "expired": catalogue.count_archive_deleted(),
         # A window somebody typed that contradicts another one.
         "window_conflicts": cfg.local_outlives_archive,
+        # A shortened window, staged and waiting. Nothing has been deleted, and
+        # nothing will be until it is answered.
+        "retention_hold": retention_hold(catalogue),
     }
 
 
@@ -716,6 +866,9 @@ class StorageWorker:
         self.config_error: str = ""
         self.config_reloaded_at: float = 0.0
         self._config_stamp = self._stamp()
+        # At startup too, not only on reload: a file edited while the service
+        # was stopped is exactly as dangerous, and easier to do by accident.
+        note_window_changes(self.catalogue, self.cfg)
 
     @property
     def running(self) -> bool:
@@ -778,6 +931,7 @@ class StorageWorker:
         )
         self.cfg = fresh
         self.config_reloaded_at = _time.time()
+        note_window_changes(self.catalogue, fresh)
         return True
 
     def apply_config(self, cfg: StorageConfig) -> None:
@@ -793,6 +947,7 @@ class StorageWorker:
         self._config_stamp = self._stamp()
         self.config_error = ""
         self.config_reloaded_at = _time.time()
+        note_window_changes(self.catalogue, cfg)
 
     def run_once(self) -> str:
         import time as _time

@@ -3,8 +3,8 @@
 Set the retention windows from saar-seva's admin panel instead of editing
 `storage.yaml` over SSH, the same way the camera list already works.
 
-**PLAN. Phase 1 is BUILT (2026-08-01); phases 2-6 are not started.** Written
-after the file below was created by hand on the shop recorder.
+**PLAN. Phases 1 and 4 are BUILT (2026-08-01); 2, 3, 5, 6 are not started.**
+Written after the file below was created by hand on the shop recorder.
 
 ---
 
@@ -143,17 +143,28 @@ Three properties handle it, in order of importance:
    be shown at save time from the server's own knowledge, and any design that
    pretends otherwise is guessing.
 
-2. **A shortening is staged, not applied.** When a sync reduces any window, the
-   recorder computes what the new window *would* delete — clip count, GB, and
-   the date of the oldest clip that would go — records it, and **does not
-   delete**. The status page and `cli storage` show:
+2. **A shortening is staged, not applied. BUILT.** When any window is reduced —
+   by a sync later, by a hand edit today — the recorder computes what the new
+   window *would* delete (clip count, GB, oldest date), records it in the
+   catalogue, and **does not delete**. `prune_archive` refuses to run while it
+   is held, which is the last gate before footage stops existing and the only
+   one no caller can forget. The status page and `cli storage` show:
 
    > Retention for packing was shortened from 45 to 4 days. Applying it would
    > delete 214 clips (380 GB), going back to 12 June. Nothing has been deleted.
    > Confirm with `cli storage --accept-retention`, or set it back in the admin
    > panel.
 
-   Lengthening applies immediately and silently. Only reductions stage.
+   Lengthening applies immediately and silently. Only reductions stage, and
+   putting the window back clears the hold at no cost. A reduction made in
+   steps — 45 to 20 to 4, none of them accepted — is measured against the
+   longest window the source is known to have had, or the rest would slip
+   through unremarked. `keep_days_local` is deliberately never held: shortening
+   it removes copies that are verifiably at the archive, which costs nothing.
+
+   The comparison is against windows stored in the CATALOGUE, not against
+   whatever the worker read at startup, so a file edited while the service was
+   stopped is caught on the next start.
 
 3. **The recorder reports its state upward** so the admin screen is not blind.
    It already sends a heartbeat every poll; add free space, clip count, oldest
@@ -233,9 +244,8 @@ Each phase is useful alone and safe to stop after.
    `storage_revision` on both poll endpoints.**
 3. **Recorder: fetch, validate, merge-write, report.** Windows become central.
    Local keys are untouched by construction.
-4. **The staging guard for reductions.** Before anyone can shorten a window in
-   anger — so realistically, before phase 3 ships to a shop with
-   `delete_from_archive` on.
+4. ~~**The staging guard for reductions.**~~ **BUILT 2026-08-01**, ahead of
+   2 and 3: the same risk already exists through a hand edit to storage.yaml.
 5. **Recorder state in the heartbeat, and the read-only half of the panel.**
 6. **The admin UI itself.**
 
