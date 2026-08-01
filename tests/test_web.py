@@ -168,9 +168,8 @@ def test_status_page_renders(client):
 def _configure_storage(app, tmp_path: Path, monkeypatch, body: str) -> Path:
     """Write a storage.yaml and make the running app use it.
 
-    The background worker reads the config once, at startup, so in the shop a
-    changed storage.yaml needs a service restart. Tests are not going to restart
-    an app, so the worker's copy is replaced directly.
+    The worker picks a changed file up on its next pass, which these tests are
+    not going to wait ten minutes for, so its copy is set directly.
     """
     archive = tmp_path / "archive"
     archive.mkdir(exist_ok=True)
@@ -371,3 +370,39 @@ def test_keeping_a_clip_from_the_page(client, app):
 
     client.post(f"/clip/{clip.id}/keep", data={"keep": "0"}, follow_redirects=True)
     assert cat.get(clip.id).keep == 0
+
+
+def test_a_stale_archive_error_is_dated_not_contradicted(client, app, tmp_path, monkeypatch):
+    """The green 'archive reachable' line is measured on page load; last_error
+    is up to ten minutes old. Shown undated side by side, the page contradicts
+    itself — which is how people learn to stop reading it."""
+    import time
+
+    _configure_storage(app, tmp_path, monkeypatch, "")
+    worker = app.extensions["storage"]
+    worker.last_error = "the archive at /mnt/backup-drive/RepairCam is not there"
+    worker.last_run_at = time.time() - 120
+
+    page = client.get("/status").data.decode()
+
+    assert "at the last check" in page
+    assert "reachable again now" in page
+    assert "storage --archive" in page
+
+
+def test_a_current_archive_error_is_not_softened(client, app, tmp_path, monkeypatch):
+    """When the archive really is gone right now, it stays an error."""
+    import time
+
+    store = tmp_path / "storage.yaml"
+    store.write_text(f"storage:\n  archive_dir: {tmp_path / 'not-mounted'}\n")
+    monkeypatch.setenv("REPAIRCAM_STORAGE", str(store))
+    worker = app.extensions["storage"]
+    worker.cfg = storage.load_config(store)
+    worker.last_error = "the archive is not there"
+    worker.last_run_at = time.time() - 120
+
+    page = client.get("/status").data.decode()
+
+    assert "reachable again now" not in page
+    assert 'class="err small"' in page

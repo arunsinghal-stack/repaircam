@@ -50,7 +50,21 @@
       </div>
     {% endif %}
     {% if store.last_error %}
-      <div class="err small">{{ store.last_error }}</div>
+      {# Dated, because it is up to ten minutes old while everything above it
+         was measured just now. An undated stale error sitting under a live
+         green line makes the page contradict itself. #}
+      <div class="{{ 'muted' if store.archive_ready else 'err' }} small">
+        {{ store.last_error }}
+        {% if store.seconds_since_run is not none %}
+          &mdash; at the last check, {{ store.seconds_since_run }}s ago
+        {% endif %}
+        {% if store.archive_ready %}
+          <div class="muted small">The archive is reachable again now
+          {%- if store.next_run_in %}; the next pass, in about
+            {{ (store.next_run_in / 60)|round|int }} min, will clear this{% endif -%}.
+          To do it now: <code>python3 -m repaircam.cli storage --archive</code></div>
+        {% endif %}
+      </div>
     {% elif store.seconds_since_run is not none %}
       <div class="muted small">Last checked {{ store.seconds_since_run }}s ago{% if store.last_summary %} &mdash; {{ store.last_summary }}{% endif %}</div>
     {% endif %}

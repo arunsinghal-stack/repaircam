@@ -823,6 +823,14 @@ class StorageWorker:
             "seconds_since_run": (
                 round(_time.time() - self.last_run_at) if self.last_run_at else None
             ),
+            # last_error is up to `interval` old, while everything else in this
+            # dict was just measured. Without the wait, a page shows a live
+            # "archive reachable" beside a stale "archive is not there" and
+            # contradicts itself — which teaches people to stop reading it.
+            "next_run_in": (
+                max(0, round(self.last_run_at + self.interval - _time.time()))
+                if self.last_run_at else None
+            ),
             # The file on disk says one thing and the worker is doing another.
             # Nothing else would ever say so.
             "config_error": self.config_error,
