@@ -161,7 +161,7 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
 
-## Central storage config (phases 1-4 BUILT, no admin screen yet — docs/STORAGE-CONFIG-PLAN.md)
+## Central storage config (phases 1-5 BUILT, only the admin SCREEN missing — docs/STORAGE-CONFIG-PLAN.md)
 - Retention windows from the admin panel, like the camera list. **Only the policy half.**
   `archive_dir`, `keep_days_local` and both delete switches stay LOCAL, and a payload
   containing them is rejected outright: a central mount path can silently turn a backup
@@ -182,8 +182,13 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   The two revisions are tracked APART — one number for both would re-read the camera list
   whenever a retention window moved. Revision 0 = nobody saved a policy, so nothing is
   applied. `storage.yaml` is rewritten in two labelled halves so it is obvious which edits
-  survive a sync. **Phases 5 and 6 (recorder state reported upward, and the admin screen)
-  do not exist**, so nothing can set a policy from a browser yet.
+  survive a sync.
+- The recorder also reports what it HOLDS, on the existing heartbeat (`storage.report()`
+  -> `storage_config.record_recorder_state`): free space, clip counts, oldest footage,
+  archive reachable, whether either delete switch is on, and any held reduction. Freshness
+  is decided server-side (120s), like the bench lights. The archive PATH is deliberately
+  never reported. **Phase 6 — the admin SCREEN — does not exist**, so nothing can set a
+  policy from a browser yet.
 - **Retention/archive (Phase 3, BUILT — the lifecycle is closed):** `storage.py`.
   Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
   is let through. Clips are copied to `archive_dir` and verified there.
