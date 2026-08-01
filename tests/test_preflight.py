@@ -68,6 +68,12 @@ def shop(tmp_path: Path, monkeypatch, data_root: Path):
     store.write_text(f"storage:\n  archive_dir: {archive}\n")
     monkeypatch.setenv("REPAIRCAM_STORAGE", str(store))
 
+    # A box whose link_base really is one of its own addresses. Without this
+    # the "healthy" fixture would carry a warning, and a fixture that is
+    # already warning cannot prove a check fires.
+    monkeypatch.setattr(
+        config, "local_ipv4_addresses", lambda: {"127.0.0.1", "192.168.1.163"}
+    )
     monkeypatch.setattr(cli.ffmpeg, "available", lambda: True)
     monkeypatch.setattr(cli.ffmpeg, "version", lambda: "ffmpeg 4.2.7")
     monkeypatch.setattr(saarseva, "SaarSevaClient", FakeClient)
@@ -198,3 +204,79 @@ def test_no_saarseva_config_warns_and_stops_early(shop, monkeypatch, capsys):
     ))
     assert run() == 0
     assert "start every recording by hand" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# link_base: set is not the same as correct
+# --------------------------------------------------------------------------
+
+
+def test_a_link_base_pointing_at_another_machine_warns(shop, monkeypatch, capsys):
+    """The shop's network was renumbered overnight and link_base still named
+    the old address. preflight said 'link_base set — OK', because it was set.
+    Every clip link posted to Odoo after that was a dead end, and nothing
+    anywhere said so."""
+    monkeypatch.setattr(
+        config, "local_ipv4_addresses", lambda: {"127.0.0.1", "192.168.0.165"}
+    )
+
+    assert run() == 0  # a warning: the shop still records, links just break
+    out = capsys.readouterr().out
+    assert "link_base points at this machine" in out
+    assert "192.168.0.165" in out
+    assert "dead end" in out
+
+
+def test_a_link_base_naming_this_machine_passes(shop, monkeypatch, capsys):
+    monkeypatch.setattr(
+        config, "local_ipv4_addresses", lambda: {"127.0.0.1", "192.168.1.163"}
+    )
+    assert run() == 0
+    assert "dead end" not in capsys.readouterr().out
+
+
+def test_a_link_base_by_hostname_is_accepted(shop, monkeypatch, capsys):
+    """Naming the box rather than its address is the more robust way to do it,
+    and must not be reported as wrong."""
+    shop["saarseva"].write_text(
+        SAARSEVA.replace("http://192.168.1.163:8080", "http://recorder.local:8080")
+    )
+    monkeypatch.setattr(
+        config, "local_ipv4_addresses",
+        lambda: {"127.0.0.1", "192.168.1.163", "recorder.local"},
+    )
+    assert run() == 0
+    assert "dead end" not in capsys.readouterr().out
+
+
+def test_an_unset_link_base_still_fails(shop, capsys):
+    """Different fault, different message: nothing to post at all."""
+    shop["saarseva"].write_text(SAARSEVA.replace(
+        'link_base: "http://192.168.1.163:8080"', 'link_base: ""'
+    ))
+    assert run() == 1
+    assert "would have no address" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# a shop that lost benches must not read as a small shop
+# --------------------------------------------------------------------------
+
+
+def test_benches_deleted_by_the_central_list_are_reported(shop, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "camera_removals", lambda *a, **k: {
+        "at": "2026-07-31T12:25:31+00:00", "revision": 2, "benches": ["WC1", "WC2"],
+    })
+
+    assert run() == 0  # a warning, not a refusal — WC13 still records fine
+    out = capsys.readouterr().out
+    assert "benches removed by the central camera list" in out
+    assert "WC1, WC2" in out
+    assert "recording nothing" in out
+    assert "--clear-removed" in out
+
+
+def test_an_acknowledged_removal_stops_being_reported(shop, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "camera_removals", lambda *a, **k: {})
+    assert run() == 0
+    assert "removed by the central camera list" not in capsys.readouterr().out

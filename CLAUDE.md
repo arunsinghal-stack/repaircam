@@ -96,6 +96,15 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Trap:** `work_centers` in `saarseva.yaml` is an allow-list. Leave it **empty**, or a
   bench added centrally is fully configured and still never records. The status page calls
   this out under "Not auto-recording".
+- **Trap (cost the shop 2 of its 3 benches on 2026-08-01):** the central list is
+  authoritative, so a bench MISSING from it is **deleted** from `cameras.yaml` on the next
+  sync. One bench then looks exactly as healthy as three. Now recorded durably
+  (`camera_config_removed` in the catalogue) and reported by `preflight` and the status
+  page until `cli cameras --clear-removed`.
+- **`link_base` being set is not the same as it being right.** It must name an address
+  THIS box answers on; `preflight` now checks it against the machine's own addresses,
+  because a network renumbering made every link posted to Odoo a dead end and every
+  check still said OK.
 
 ## Central camera config (BUILT, both halves merged; not yet used in the shop)
 - Camera list lives in Admin → TRC settings → "Cameras ↔ work centres" (`trc.manage`).

@@ -961,6 +961,55 @@ def test_a_bench_mid_clip_is_not_rewritten_and_the_revision_is_not_banked(trigge
     assert trigger.applied_revision == 5
 
 
+def test_a_bench_the_central_list_deleted_is_remembered(trigger, client, cameras):
+    """A shrinking shop looks exactly like a small one.
+
+    The shop lost two of its three benches this way: the central list was saved
+    with one camera in it, the sync removed the other two, and every check
+    afterwards reported one perfectly healthy bench. The log line saying so had
+    long scrolled away.
+    """
+    client.config_revision = 9
+    client.camera_config = {"revision": 9, "cameras": [
+        {"odoo_workcenter_id": 12, "name": "Bench 2", "host": "192.168.0.133",
+         "password": "pw"},
+    ]}  # WC3 is simply not in the list any more
+
+    trigger.tick()
+
+    assert "WC3" not in camera_files.load_cameras()
+    gone = trigger.removed_benches
+    assert gone["benches"] == ["WC3"]
+    assert gone["revision"] == 9
+    assert gone["at"]
+    assert trigger.status()["config_removed"]["benches"] == ["WC3"]
+
+
+def test_the_removal_outlives_the_tick_that_did_it(trigger, client, catalogue, pool, config):
+    """It is written to the catalogue, not held in memory: the shop finds out
+    about this hours later, on a status page, after a restart."""
+    client.config_revision = 9
+    client.camera_config = {"revision": 9, "cameras": [
+        {"odoo_workcenter_id": 12, "name": "Bench 2", "host": "192.168.0.133",
+         "password": "pw"},
+    ]}
+    trigger.tick()
+
+    fresh = Trigger(pool, client, catalogue=catalogue, config=config)
+    assert fresh.removed_benches["benches"] == ["WC3"]
+
+
+def test_an_ordinary_change_is_not_reported_as_a_removal(trigger, client):
+    """Only deletions. An address change must not cry wolf."""
+    client.config_revision = 7
+    client.camera_config = camera_payload(revision=7, host="192.168.0.200")
+
+    trigger.tick()
+
+    assert trigger.removed_benches == {}
+    assert trigger.status()["config_removed"] == {}
+
+
 def test_a_saar_seva_that_sends_no_revision_never_triggers_a_sync(trigger, client):
     """An older server must not look like revision 0 and cause a pointless
     re-sync on every poll."""

@@ -9,10 +9,12 @@ something is wrong, and what proved the camera works in Phase 0:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import sys
 import time
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -65,6 +67,17 @@ def _add_label_arguments(parser: argparse.ArgumentParser) -> None:
 
 def cmd_cameras(args: argparse.Namespace) -> int:
     """List configured benches, and optionally test each camera."""
+    if getattr(args, "clear_removed", False):
+        from .trigger import Trigger
+
+        gone = camera_removals()
+        Catalogue().set_setting(Trigger.REMOVED_KEY, "")
+        if gone:
+            print(f"{OK} acknowledged: {', '.join(gone['benches'])} were meant to go.")
+        else:
+            print(f"{OK} nothing to acknowledge.")
+        return 0
+
     if args.sync and _sync_cameras_now() != 0:
         return 1
 
@@ -134,6 +147,23 @@ def _sync_cameras_now() -> int:
     return 0
 
 
+def camera_removals(catalogue: Catalogue | None = None) -> dict:
+    """The last central sync that DELETED benches, if it has not been cleared.
+
+    Kept out of the log because a removal is not a passing event: the bench
+    stops existing, stops recording, and every subsequent check reports the
+    smaller shop as perfectly healthy. This is what makes it keep saying so.
+    """
+    from .trigger import Trigger
+
+    try:
+        raw = (catalogue or Catalogue()).get_setting(Trigger.REMOVED_KEY, "")
+        payload = json.loads(raw) if raw else {}
+    except (OSError, ValueError):
+        return {}
+    return payload if payload.get("benches") else {}
+
+
 def cmd_preflight(args: argparse.Namespace) -> int:
     """Everything that has to be true before a shop relies on this box.
 
@@ -175,6 +205,20 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
     if cameras:
         add(True, f"{len(cameras)} bench(es) configured", ", ".join(sorted(cameras)))
+
+        # A shrinking shop looks identical to a small one. Say which benches
+        # went, and when, until somebody confirms it was meant.
+        gone = camera_removals()
+        if gone:
+            add(False, "benches removed by the central camera list",
+                f"{', '.join(gone['benches'])} — removed on "
+                f"{str(gone.get('at', ''))[:16].replace('T', ' ')} UTC when the admin "
+                f"panel saved revision {gone.get('revision', '?')}.\n"
+                "            If that was not intended, add them back in saar-seva under "
+                "Admin -> TRC settings -> Cameras. Those benches are recording nothing.\n"
+                "            If it was intended: python3 -m repaircam.cli cameras "
+                "--clear-removed",
+                warn=True)
         unmapped = [wc for wc, cam in cameras.items() if cam.odoo_workcenter_id is None]
         add(not unmapped, "every bench has an Odoo work centre",
             "" if not unmapped else
@@ -214,8 +258,22 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     else:
         add(True, "work_centers is empty", "every configured bench may auto-record")
 
-    add(bool(saar.link_base), "link_base set",
-        saar.link_base or "Not set — the links posted to Odoo would have no address.")
+    if not saar.link_base:
+        add(False, "link_base set",
+            "Not set — the links posted to Odoo would have no address.")
+    else:
+        # Set is not the same as correct. A link_base naming an address this
+        # box no longer has looks perfectly healthy and posts a dead link for
+        # every recording — which is what a network renumbering did once.
+        host = urlparse(saar.link_base).hostname or ""
+        mine = config.local_ipv4_addresses()
+        add(host in mine, "link_base points at this machine",
+            saar.link_base if host in mine else
+            f"{saar.link_base} — this box answers on "
+            f"{', '.join(sorted(a for a in mine if a[0].isdigit() and a != '0.0.0.0'))}.\n"
+            "            Every link posted to Odoo would be a dead end. Fix link_base "
+            "in repaircam/saarseva.yaml and restart the service.",
+            warn=True)
 
     client = saarseva.SaarSevaClient(saar)
     ids = sorted(c.odoo_workcenter_id for c in cameras.values() if c.odoo_workcenter_id)
@@ -678,6 +736,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--sync", action="store_true",
         help="fetch the central camera list from saar-seva and apply it now",
+    )
+    p.add_argument(
+        "--clear-removed", action="store_true",
+        help="confirm that benches deleted by the central list were meant to go",
     )
     p.set_defaults(func=cmd_cameras)
 

@@ -158,6 +158,23 @@
           before changing {{ 'it' if trigger.config_sync_waiting|length == 1 else 'them' }}.
         </div>
       {% endif %}
+      {% if trigger.config_removed %}
+        {# A shrinking shop looks exactly like a small one. Keep saying it. #}
+        <div class="err small">
+          <b>{{ trigger.config_removed.benches|join(', ') }}</b>
+          {{ 'was' if trigger.config_removed.benches|length == 1 else 'were' }} REMOVED by
+          the central list on
+          {{ trigger.config_removed.at.replace('T', ' ')[:16] }} UTC (revision
+          {{ trigger.config_removed.revision }}).
+          {{ 'That bench is' if trigger.config_removed.benches|length == 1 else 'Those benches are' }}
+          recording nothing.
+          <div class="muted small">
+            If that was not intended, add them back in saar-seva under
+            Admin &rarr; TRC settings &rarr; Cameras. If it was, run
+            <code>python3 -m repaircam.cli cameras --clear-removed</code>.
+          </div>
+        </div>
+      {% endif %}
     </dd>
     {% if trigger.owned %}
     <dt>Auto-recording</dt>

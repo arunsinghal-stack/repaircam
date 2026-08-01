@@ -14,6 +14,7 @@ See docs/PHASE5-CONTRACT.md.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -21,7 +22,7 @@ from dataclasses import dataclass, field
 
 from . import camerasync
 from . import config as camera_config
-from .catalogue import Catalogue, Recording
+from .catalogue import Catalogue, Recording, utcnow
 from .recorder import RecorderError, RecorderPool, State
 from .saarseva import (
     KIND_PACKING,
@@ -413,6 +414,11 @@ class Trigger:
     #: a restart does not re-sync a config that has not changed.
     REVISION_KEY = "camera_config_revision"
 
+    #: Catalogue key holding the last sync that DELETED benches. A removal is
+    #: not an address change — the bench stops existing — so it outlives the
+    #: log line that reported it.
+    REMOVED_KEY = "camera_config_removed"
+
     @property
     def applied_revision(self) -> int | None:
         raw = self.catalogue.get_setting(self.REVISION_KEY, "")
@@ -420,6 +426,16 @@ class Trigger:
             return int(raw)
         except (TypeError, ValueError):
             return None
+
+    @property
+    def removed_benches(self) -> dict:
+        """The last sync that deleted benches, until it is acknowledged."""
+        raw = self.catalogue.get_setting(self.REMOVED_KEY, "")
+        try:
+            payload = json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+        return payload if payload.get("benches") else {}
 
     def _sync_cameras(self, result: TickResult) -> None:
         """Fetch and apply the central camera list, if it has changed.
@@ -475,6 +491,22 @@ class Trigger:
         self.last_sync_error = ""
         self.last_sync = sync
         result.camera_sync = sync.summary()
+
+        if sync.removed:
+            # A removal deletes a bench: it stops recording and nothing on this
+            # box refers to it any more. That is a much bigger event than an
+            # address change, and until now it was one WARNING in a log that
+            # scrolls. The shop lost two of its three benches this way and
+            # every check afterwards said OK, because one configured bench is
+            # a perfectly healthy-looking thing to be.
+            #
+            # So it is written down, and preflight and the status page keep
+            # saying it until somebody acknowledges it.
+            self.catalogue.set_setting(self.REMOVED_KEY, json.dumps({
+                "at": utcnow(),
+                "revision": sync.revision,
+                "benches": sorted(sync.removed),
+            }))
 
         if sync.changed:
             self.reload_benches()
@@ -588,6 +620,9 @@ class Trigger:
             "config_sync_summary": sync.summary() if sync else "",
             "config_sync_error": self.last_sync_error,
             "config_sync_waiting": list(sync.deferred) if sync else [],
+            # Benches the central list DELETED. Not a passing event: they stop
+            # existing, and one bench looks as healthy as three.
+            "config_removed": self.removed_benches,
             "vetoed_benches": list(self.vetoed_benches),
             "heartbeat_error": self.last_heartbeat_error,
             "heartbeat_seconds_ago": (
