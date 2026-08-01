@@ -54,6 +54,16 @@
     {% elif store.seconds_since_run is not none %}
       <div class="muted small">Last checked {{ store.seconds_since_run }}s ago{% if store.last_summary %} &mdash; {{ store.last_summary }}{% endif %}</div>
     {% endif %}
+    {% if store.config_error %}
+      {# The file says one thing and the worker is doing another. Everything
+         else on this page describes the settings in USE, so without this the
+         page would look like a flat contradiction of the file. #}
+      <div class="err small">
+        <b>{{ store.config_path }} was not reloaded</b> &mdash; {{ store.config_error }}
+        <div class="muted small">The settings shown below are the ones still in use.
+        Fix the file and they will be picked up within ten minutes.</div>
+      </div>
+    {% endif %}
   </dd>
 
   {# The two windows are shown apart because they are not the same promise. One

@@ -7,6 +7,7 @@ refuses.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -600,3 +601,125 @@ def test_keeping_one_does_not_spare_the_others(catalogue, data_root, cfg):
     assert result.deleted == [ordinary.id]
     assert (data_root / kept.path).exists()
     assert not (data_root / ordinary.path).exists()
+
+
+# --------------------------------------------------------------------------
+# the worker picks up a changed storage.yaml without a restart
+# --------------------------------------------------------------------------
+
+
+def write_config(path: Path, body: str) -> Path:
+    path.write_text(f"storage:\n{body}")
+    # stat() has coarse timestamps on some filesystems, and two writes in the
+    # same test can land in the same tick. Nudge mtime so the test is testing
+    # the worker, not the clock.
+    stamp = path.stat().st_mtime
+    os.utime(path, (stamp + 10, stamp + 10))
+    return path
+
+
+def test_an_edited_config_is_picked_up_without_a_restart(catalogue, tmp_path):
+    """The worker read its settings once, at startup, so every change needed
+    `systemctl restart repaircam` — and forgetting it meant the status page
+    reported settings the worker was not using."""
+    path = write_config(tmp_path / "storage.yaml", "  keep_days_local: 5\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+    assert worker.cfg.keep_days_local == 5
+
+    write_config(path, "  keep_days_local: 9\n")
+
+    assert worker.reload_if_changed() is True
+    assert worker.cfg.keep_days_local == 9
+
+
+def test_an_untouched_config_is_not_re_read(catalogue, tmp_path):
+    """Steady state must be one stat() call, not a YAML parse every pass."""
+    path = write_config(tmp_path / "storage.yaml", "  keep_days_local: 5\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+
+    assert worker.reload_if_changed() is False
+    assert worker.reload_if_changed() is False
+
+
+def test_a_touched_but_unchanged_config_reports_no_change(catalogue, tmp_path):
+    path = write_config(tmp_path / "storage.yaml", "  keep_days_local: 5\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+
+    write_config(path, "  keep_days_local: 5\n")  # rewritten, same content
+
+    assert worker.reload_if_changed() is False
+    assert worker.cfg.keep_days_local == 5
+
+
+def test_a_broken_config_keeps_the_settings_in_use(catalogue, tmp_path, archive):
+    """One typo must not switch the shop's only backup off. The running config
+    stays, and the divergence is reported rather than swallowed."""
+    path = write_config(tmp_path / "storage.yaml", f"  archive_dir: {archive}\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+    assert worker.cfg.archive_dir == str(archive)
+
+    path.write_text("storage:\n  keep_days: [this is not\n")
+    stamp = path.stat().st_mtime
+    os.utime(path, (stamp + 10, stamp + 10))
+
+    assert worker.reload_if_changed() is False
+    assert worker.cfg.archive_dir == str(archive)   # still archiving
+    assert "not valid YAML" in worker.config_error
+    assert worker.status()["config_error"]
+
+
+def test_a_fixed_config_clears_the_error(catalogue, tmp_path):
+    path = write_config(tmp_path / "storage.yaml", "  keep_days_local: 5\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+    path.write_text("storage:\n  keep_days: [broken\n")
+    stamp = path.stat().st_mtime
+    os.utime(path, (stamp + 10, stamp + 10))
+    worker.reload_if_changed()
+    assert worker.config_error
+
+    write_config(path, "  keep_days_local: 8\n")
+
+    assert worker.reload_if_changed() is True
+    assert worker.config_error == ""
+    assert worker.cfg.keep_days_local == 8
+
+
+def test_a_config_file_appearing_later_is_adopted(catalogue, tmp_path, archive):
+    """The normal way this gets set up: the worker starts with no storage.yaml
+    at all, and somebody creates one afterwards."""
+    path = tmp_path / "storage.yaml"
+    worker = storage.StorageWorker(catalogue, config_path=path)
+    assert worker.cfg.archive_dir == ""
+
+    write_config(path, f"  archive_dir: {archive}\n")
+
+    assert worker.reload_if_changed() is True
+    assert worker.cfg.archive_dir == str(archive)
+
+
+def test_a_run_reloads_before_it_works_not_after(catalogue, data_root, tmp_path, archive):
+    """A pass that archives under the old settings and then notices they
+    changed has already done the wrong thing once."""
+    path = write_config(tmp_path / "storage.yaml", "  archive_dir: ''\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+    clip = make_clip(catalogue, data_root, name="a.mp4")
+
+    write_config(path, f"  archive_dir: {archive}\n")
+    worker.run_once()
+
+    assert catalogue.get(clip.id).archived_at   # archived on THIS pass
+    assert worker.cfg.archive_dir == str(archive)
+
+
+def test_config_handed_straight_to_the_worker_wins(catalogue, tmp_path, archive):
+    """For a caller that has just written the file itself — a central sync,
+    later — so the change lands now rather than up to ten minutes later, and
+    the two paths do not then fight over it."""
+    path = write_config(tmp_path / "storage.yaml", "  keep_days_local: 5\n")
+    worker = storage.StorageWorker(catalogue, config_path=path)
+
+    write_config(path, "  keep_days_local: 12\n")
+    worker.apply_config(storage.load_config(path))
+
+    assert worker.cfg.keep_days_local == 12
+    assert worker.reload_if_changed() is False  # already up to date

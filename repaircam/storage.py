@@ -671,24 +671,110 @@ class StorageWorker:
         cfg: StorageConfig | None = None,
         *,
         interval: float = DEFAULT_INTERVAL_S,
+        config_path: Path | None = None,
     ):
         import threading
 
         self.catalogue = catalogue or Catalogue()
-        self.cfg = cfg or load_config()
+        self.config_path = config_path or config_file()
+        self.cfg = cfg or load_config(self.config_path)
         self.interval = interval
         self._stop = threading.Event()
         self._thread = None
         self.last_run_at: float = 0.0
         self.last_summary: str = ""
         self.last_error: str = ""
+        #: Why the last attempt to re-read storage.yaml was refused. The
+        #: previous config stays in force — a typo must not switch archiving
+        #: off — so this is the only thing that says the file on disk and the
+        #: settings in use have diverged.
+        self.config_error: str = ""
+        self.config_reloaded_at: float = 0.0
+        self._config_stamp = self._stamp()
 
     @property
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
+    # -- picking up a changed storage.yaml ----------------------------------
+
+    def _stamp(self) -> tuple | None:
+        """Cheap "has the file changed" fingerprint, or None if there isn't one.
+
+        mtime AND size, because an edit that keeps the byte count is ordinary
+        (``30`` -> ``45``) and one that keeps the timestamp is not.
+        """
+        try:
+            info = self.config_path.stat()
+        except OSError:
+            return None
+        return (info.st_mtime_ns, info.st_size)
+
+    def reload_if_changed(self) -> bool:
+        """Re-read storage.yaml if it has been edited. Returns True if it moved.
+
+        The worker used to read its config once, at startup, so every change
+        needed `systemctl restart repaircam` — and forgetting meant the status
+        page reported settings the worker was not using. That is survivable for
+        a file edited over SSH by the person who just wrote it. It is not
+        survivable for a setting changed from a web panel, where nothing
+        appears to happen and the panel looks broken.
+
+        A file that will not parse is refused and the running config is kept:
+        the alternative is that one typo silently stops the shop's only backup.
+        """
+        import time as _time
+
+        stamp = self._stamp()
+        if stamp == self._config_stamp:
+            return False
+
+        # Recorded even on failure, so a file that stays broken is reported
+        # once rather than every ten minutes. Fixing it changes the stamp
+        # again, which is what brings it back.
+        self._config_stamp = stamp
+
+        try:
+            fresh = load_config(self.config_path)
+        except StorageError as exc:
+            self.config_error = str(exc)
+            log.error("storage.yaml was NOT reloaded, keeping the settings in use: %s", exc)
+            return False
+
+        self.config_error = ""
+        if fresh == self.cfg:
+            return False  # touched, not changed
+
+        was, now = self.cfg.describe(), fresh.describe()
+        changed = sorted(key for key, value in now.items() if was.get(key) != value)
+        log.info(
+            "storage.yaml reloaded — %s",
+            "; ".join(f"{key}: {was.get(key)} -> {now[key]}" for key in changed) or "no change",
+        )
+        self.cfg = fresh
+        self.config_reloaded_at = _time.time()
+        return True
+
+    def apply_config(self, cfg: StorageConfig) -> None:
+        """Adopt settings handed straight to the worker.
+
+        For a caller that has just written storage.yaml itself and should not
+        have to wait up to ``interval`` for the change to take: it stamps the
+        file as already read, so this and ``reload_if_changed`` cannot fight.
+        """
+        import time as _time
+
+        self.cfg = cfg
+        self._config_stamp = self._stamp()
+        self.config_error = ""
+        self.config_reloaded_at = _time.time()
+
     def run_once(self) -> str:
         import time as _time
+
+        # Before the work, not after: a pass that archives under the old
+        # settings and then notices they changed has done the wrong thing once.
+        self.reload_if_changed()
 
         try:
             archived = archive_pending(self.catalogue, self.cfg)
@@ -737,5 +823,9 @@ class StorageWorker:
             "seconds_since_run": (
                 round(_time.time() - self.last_run_at) if self.last_run_at else None
             ),
+            # The file on disk says one thing and the worker is doing another.
+            # Nothing else would ever say so.
+            "config_error": self.config_error,
+            "config_path": str(self.config_path),
         })
         return info

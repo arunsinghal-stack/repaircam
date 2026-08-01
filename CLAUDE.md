@@ -193,8 +193,10 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   footage** (`archive_deleted`, `archive_deleted_at`) so an old Odoo link says "passed its
   retention window and has been deleted" rather than "missing from disk". A background
   worker does all of it every 10 min; `cli storage [--archive] [--prune]` does it by hand.
-  Config: `repaircam/storage.yaml` (optional — the guard applies without it); a change needs
-  a service restart, since the worker reads it once. Sizing: docs/STORAGE-PLAN.md — 22–43
+  Config: `repaircam/storage.yaml` (optional — the guard applies without it). **A change is
+  picked up within one 10-minute pass, no restart** (`StorageWorker.reload_if_changed`); a
+  file that will not parse is refused and the settings in use are kept, with the divergence
+  on the status page. Sizing: docs/STORAGE-PLAN.md — 22–43
   GB/day at 3 benches, so the archive settles near 1.4 TB on a 30/45 policy.
   Stage 7 (exporting `keep`-marked clips as a training set) still does not exist.
 

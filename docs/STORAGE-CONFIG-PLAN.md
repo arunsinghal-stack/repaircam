@@ -3,8 +3,8 @@
 Set the retention windows from saar-seva's admin panel instead of editing
 `storage.yaml` over SSH, the same way the camera list already works.
 
-**PLAN — nothing built.** Written 2026-08-01, after the file below was created
-by hand on the shop recorder.
+**PLAN. Phase 1 is BUILT (2026-08-01); phases 2-6 are not started.** Written
+after the file below was created by hand on the shop recorder.
 
 ---
 
@@ -182,18 +182,26 @@ Refuse the whole payload rather than half-apply, exactly as `camerasync` does:
   reported — the recorder would be asked to hold footage longer than the shop
   wants it to exist. `StorageConfig.local_outlives_archive` already detects it.
 
-## One existing wart this forces us to fix
+## One existing wart this forced us to fix — BUILT
 
-`StorageWorker` reads the config **once**, at startup — which is why changing
-`storage.yaml` today needs `systemctl restart repaircam`. That is tolerable for
-a file somebody edits over SSH. It is not tolerable for a setting changed from a
-web panel, where nothing would appear to happen and the obvious conclusion is
-that the panel is broken.
+`StorageWorker` read the config **once**, at startup, which is why changing
+`storage.yaml` needed `systemctl restart repaircam`. Tolerable for a file
+somebody edits over SSH. Not tolerable for a setting changed from a web panel,
+where nothing would appear to happen and the obvious conclusion is that the
+panel is broken.
 
-So the worker must re-read on change. Cheapest correct version: the sync writes
-the file and hands the new `StorageConfig` to the worker directly; the worker
-also re-reads if the file's mtime has moved, so a hand edit is picked up within
-one 10-minute pass without a restart.
+Built as `StorageWorker.reload_if_changed()`, called at the top of every pass —
+before the work, since a pass that archives under the old settings and then
+notices they changed has already done the wrong thing once. It fingerprints the
+file by mtime *and* size, because an edit that keeps the byte count is ordinary
+(`30` -> `45`). A file that will not parse is **refused and the running config
+kept**: the alternative is one typo silently stopping the shop's only backup.
+That divergence — file says one thing, worker doing another — is the one state
+nothing else on the status page could express, so it has its own line there.
+
+`apply_config()` exists for phase 3: a caller that has just written the file
+itself hands the config straight over, so the change lands immediately rather
+than up to ten minutes later, and the two paths cannot fight over it.
 
 ---
 
@@ -219,8 +227,8 @@ numbers; what the shop cannot see today is what those numbers are doing.
 
 Each phase is useful alone and safe to stop after.
 
-1. **Recorder reloads config without a restart.** Fixes today's wart, no
-   protocol change. Do this first regardless of whether the rest happens.
+1. ~~**Recorder reloads config without a restart.**~~ **BUILT 2026-08-01.**
+   No protocol change; useful whether or not the rest happens.
 2. **saar-seva: `SystemSetting` + `GET /repaircam/storage-config` +
    `storage_revision` on both poll endpoints.**
 3. **Recorder: fetch, validate, merge-write, report.** Windows become central.
@@ -231,9 +239,9 @@ Each phase is useful alone and safe to stop after.
 5. **Recorder state in the heartbeat, and the read-only half of the panel.**
 6. **The admin UI itself.**
 
-Phase 1 is worth doing this week. Phases 2–6 are worth doing when there is more
-than one recorder, or when somebody actually wants to change a window — which
-has not happened yet, and may not for months.
+Phases 2–6 are worth doing when there is more than one recorder, or when
+somebody actually wants to change a window — which has not happened yet, and
+may not for months.
 
 ## What this does not solve
 

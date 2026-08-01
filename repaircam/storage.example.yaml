@@ -2,6 +2,10 @@
 #
 #     cp repaircam/storage.example.yaml repaircam/storage.yaml
 #
+# A change is picked up on the recorder's next pass, within ten minutes. No
+# restart. If the file will not parse it is refused and the settings already in
+# use are kept — the status page says so.
+#
 # WITHOUT this file everything below still applies at its default. The
 # free-space guard is not something you switch on: it is what stops a repair
 # being half-recorded onto a full disk.
