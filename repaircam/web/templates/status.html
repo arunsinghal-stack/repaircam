@@ -223,6 +223,30 @@
         </div>
       {% endif %}
     </dd>
+    <dt>Retention policy</dt>
+    <dd>
+      {% if trigger.storage_sync_error %}
+        <span class="err">not applied &mdash; {{ trigger.storage_sync_error }}</span>
+        <div class="muted small">The windows in use are the ones in
+        <code>storage.yaml</code>; nothing central has overridden them.</div>
+      {% elif trigger.storage_revision_applied is none %}
+        <span class="muted">set on this recorder &mdash; the admin panel is not driving it</span>
+      {% else %}
+        revision {{ trigger.storage_revision_applied }} from the admin panel
+        {%- if trigger.storage_revision_seen is not none
+               and trigger.storage_revision_seen != trigger.storage_revision_applied %}
+          <span class="warn-text">&mdash; revision {{ trigger.storage_revision_seen }} is waiting</span>
+        {%- endif %}
+        {%- if trigger.storage_sync_summary %}
+          <div class="muted small">{{ trigger.storage_sync_summary }}</div>
+        {%- endif %}
+      {% endif %}
+      <div class="muted small">
+        Only how long footage is kept. Where the archive is, how many days this
+        laptop holds, and whether anything is deleted stay on this recorder and
+        cannot be set centrally.
+      </div>
+    </dd>
     {% if trigger.owned %}
     <dt>Auto-recording</dt>
     <dd>{% for wc, key in trigger.owned.items() %}<b>{{ wc }}</b> {{ key }}{% if not loop.last %}, {% endif %}{% endfor %}</dd>

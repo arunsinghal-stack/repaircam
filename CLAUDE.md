@@ -161,7 +161,7 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
 
-## Central storage config (PLANNED, nothing built — docs/STORAGE-CONFIG-PLAN.md)
+## Central storage config (phases 1-4 BUILT, no admin screen yet — docs/STORAGE-CONFIG-PLAN.md)
 - Retention windows from the admin panel, like the camera list. **Only the policy half.**
   `archive_dir`, `keep_days_local` and both delete switches stay LOCAL, and a payload
   containing them is rejected outright: a central mount path can silently turn a backup
@@ -174,8 +174,16 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   (`cli storage --accept-retention`, or put the window back), and the baseline lives in the
   catalogue so an edit made while the service was stopped is still caught. `keep_days_local`
   is never staged — shortening it only removes copies that are verifiably archived.
-- Blocker regardless of the rest: `StorageWorker` reads its config once at startup, so a
-  panel change would appear to do nothing. Phase 1 is making it reload.
+- ~~Blocker: `StorageWorker` read its config once at startup.~~ **BUILT:**
+  `reload_if_changed()` picks up an edited `storage.yaml` within one 10-min pass.
+- **BUILT both ends, not yet merged or used:** saar-seva `backend/app/storage_config.py`
+  + `GET /repaircam/storage-config` + `storage_revision` on both polls (branch
+  `claude/central-storage-config`); recorder `repaircam/storagesync.py` + `trigger.py`.
+  The two revisions are tracked APART — one number for both would re-read the camera list
+  whenever a retention window moved. Revision 0 = nobody saved a policy, so nothing is
+  applied. `storage.yaml` is rewritten in two labelled halves so it is obvious which edits
+  survive a sync. **Phases 5 and 6 (recorder state reported upward, and the admin screen)
+  do not exist**, so nothing can set a policy from a browser yet.
 - **Retention/archive (Phase 3, BUILT — the lifecycle is closed):** `storage.py`.
   Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
   is let through. Clips are copied to `archive_dir` and verified there.

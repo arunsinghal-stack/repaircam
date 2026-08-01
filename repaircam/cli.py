@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, ffmpeg, recovery, saarseva, storage
+from . import __version__, config, ffmpeg, recovery, saarseva, storage, storagesync
 from .backends import CaptureError, build_backend
 from .catalogue import Catalogue, JobLabels
 from .config import ConfigError
@@ -299,6 +299,22 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         except saarseva.SaarSevaError as exc:
             add(False, "recording light reaches saar-seva", str(exc),
                 warn=getattr(exc, "status", None) == 404)
+
+        try:
+            payload = client.fetch_storage_config()
+            revision = int(payload.get("revision") or 0)
+            if not revision:
+                add(True, "retention policy",
+                    "set on this recorder — the admin panel is not driving it")
+            else:
+                storagesync.validate(payload)
+                add(True, "central retention policy", f"revision {revision}, accepted")
+        except saarseva.SaarSevaError as exc:
+            add(False, "central retention policy", str(exc),
+                warn=getattr(exc, "status", None) == 404)
+        except storagesync.StorageSyncError as exc:
+            add(False, "central retention policy",
+                f"REFUSED: {exc}\n            storage.yaml is untouched.")
 
         try:
             payload = client.fetch_camera_config()

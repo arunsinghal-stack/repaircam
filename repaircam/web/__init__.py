@@ -54,8 +54,10 @@ def create_app(**overrides) -> Flask:
     app.extensions["catalogue"] = Catalogue()
     app.extensions["recorders"] = RecorderPool(app.extensions["catalogue"])
 
-    app.extensions["trigger"] = _maybe_start_trigger(app)
+    # Storage first: the trigger hands it any retention policy that arrives
+    # from saar-seva, so it has to exist before the trigger starts polling.
     app.extensions["storage"] = _start_storage_worker(app)
+    app.extensions["trigger"] = _maybe_start_trigger(app)
 
     from .routes import bp
 
@@ -112,6 +114,7 @@ def _maybe_start_trigger(app: Flask):
             saarseva.SaarSevaClient(config),
             catalogue=app.extensions["catalogue"],
             config=config,
+            storage_worker=app.extensions.get("storage"),
         )
         trigger.start()
         log.info("saar-seva auto-trigger: polling %s every %ss", config.base_url, config.poll_seconds)

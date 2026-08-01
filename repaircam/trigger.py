@@ -20,7 +20,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from . import camerasync
+from . import camerasync, storagesync
 from . import config as camera_config
 from .catalogue import Catalogue, Recording, utcnow
 from .recorder import RecorderError, RecorderPool, State
@@ -54,13 +54,15 @@ class TickResult:
     partial: list[str] = field(default_factory=list)
     #: Set when the central camera list was applied on this tick.
     camera_sync: str = ""
+    #: Set when the central retention policy was applied on this tick.
+    storage_sync: str = ""
     skipped: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
         return bool(
             self.started or self.finished or self.links_posted
-            or self.links_failed or self.camera_sync
+            or self.links_failed or self.camera_sync or self.storage_sync
         )
 
     def summary(self) -> str:
@@ -82,6 +84,8 @@ class TickResult:
             bits.append(f"NO ANSWER for {', '.join(self.partial)} — those benches left alone")
         if self.camera_sync:
             bits.append(f"cameras {self.camera_sync}")
+        if self.storage_sync:
+            bits.append(f"storage {self.storage_sync}")
         return "; ".join(bits)
 
 
@@ -95,11 +99,17 @@ class Trigger:
         *,
         catalogue: Catalogue | None = None,
         config: SaarSevaConfig | None = None,
+        storage_worker=None,
     ):
         self.pool = pool
         self.client = client
         self.config = config or client.config
         self.catalogue = catalogue or pool.catalogue
+        #: The background storage worker, when the web app started one. A
+        #: policy arriving from saar-seva is handed straight to it: otherwise
+        #: the change would sit unread for up to ten minutes and the status
+        #: page would show settings nobody had asked for any more.
+        self.storage_worker = storage_worker
 
         # Benches this trigger started, and which operation each is recording.
         # Only these are ever stopped automatically — see _is_ours.
@@ -124,6 +134,8 @@ class Trigger:
         self.last_tick_at: float = 0.0
         self.last_sync: camerasync.SyncResult | None = None
         self.last_sync_error: str = ""
+        self.last_storage_sync: storagesync.SyncResult | None = None
+        self.last_storage_error: str = ""
         self.last_heartbeat_at: float = 0.0
         self.last_heartbeat_error: str = ""
 
@@ -223,6 +235,7 @@ class Trigger:
         # Before the links, and before the heartbeat, so a bench added centrally
         # can start being filmed on this very tick.
         self._sync_cameras(result)
+        self._sync_storage(result)
 
         self._post_pending_links(result)
         # After reconciling, so what is reported is the state the benches are
@@ -437,6 +450,83 @@ class Trigger:
             return {}
         return payload if payload.get("benches") else {}
 
+    #: Catalogue key holding the storage-policy revision this box has applied.
+    STORAGE_REVISION_KEY = "storage_config_revision"
+
+    @property
+    def applied_storage_revision(self) -> int | None:
+        raw = self.catalogue.get_setting(self.STORAGE_REVISION_KEY, "")
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    def _sync_storage(self, result: TickResult) -> None:
+        """Fetch and apply the central retention policy, if it has changed.
+
+        Same shape and the same rules as the camera sync, and free in steady
+        state for the same reason: the revision rides the poll that already
+        happened, so this returns immediately unless it moved.
+
+        Two things it will not do. It never touches this recorder's own
+        settings — where the archive is, how many days this disk holds, whether
+        anything is deleted — and a policy naming one of them is refused whole.
+        And it never deletes: a shortened window is written to the file but
+        HELD by storage.note_window_changes, which makes the archive pass
+        refuse to run until a person at the shop accepts the cost. A number
+        typed on a web form cannot end footage on its own.
+        """
+        seen = getattr(self.client, "last_storage_revision", None)
+        if seen is None:
+            return  # a saar-seva too old to send one; nothing to do
+        if not seen:
+            # Revision 0: nobody has ever saved a policy. Applying defaults
+            # here would silently replace whatever this shop chose for itself.
+            return
+        if seen == self.applied_storage_revision:
+            return
+
+        try:
+            payload = self.client.fetch_storage_config()
+        except SaarSevaError as exc:
+            if exc.status == 404:
+                log.debug("saar-seva has no central storage policy yet")
+                return
+            self.last_storage_error = str(exc)
+            log.warning("could not fetch the storage policy: %s", exc)
+            return
+
+        try:
+            sync = storagesync.apply(payload)
+        except storagesync.StorageSyncError as exc:
+            self.last_storage_error = str(exc)
+            log.error("refused the storage policy: %s", exc)
+            return
+        except OSError as exc:
+            self.last_storage_error = f"could not write storage.yaml: {exc}"
+            log.error("%s", self.last_storage_error)
+            return
+
+        self.last_storage_error = ""
+        self.last_storage_sync = sync
+        result.storage_sync = sync.summary()
+        self.catalogue.set_setting(self.STORAGE_REVISION_KEY, str(sync.revision))
+
+        if sync.changed:
+            self.catalogue.log_event("storage-sync", detail=sync.summary())
+            # Hand it over rather than let the worker find it in up to ten
+            # minutes: this is also what stages a shortened window, and a
+            # warning that arrives ten minutes late is a warning about
+            # something that has already happened.
+            worker = self.storage_worker
+            if worker is not None:
+                try:
+                    from . import storage
+
+                    worker.apply_config(storage.load_config())
+                except Exception as exc:  # never let a config read kill the poll
+                    log.warning("storage policy written but not adopted yet: %s", exc)
+
     def _sync_cameras(self, result: TickResult) -> None:
         """Fetch and apply the central camera list, if it has changed.
 
@@ -620,6 +710,12 @@ class Trigger:
             "config_sync_summary": sync.summary() if sync else "",
             "config_sync_error": self.last_sync_error,
             "config_sync_waiting": list(sync.deferred) if sync else [],
+            "storage_revision_applied": self.applied_storage_revision,
+            "storage_revision_seen": getattr(self.client, "last_storage_revision", None),
+            "storage_sync_summary": (
+                self.last_storage_sync.summary() if self.last_storage_sync else ""
+            ),
+            "storage_sync_error": self.last_storage_error,
             # Benches the central list DELETED. Not a passing event: they stop
             # existing, and one bench looks as healthy as three.
             "config_removed": self.removed_benches,

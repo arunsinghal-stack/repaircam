@@ -50,6 +50,13 @@ class FakeClient:
     def fetch_camera_config(self):
         return {"revision": 3, "cameras": [{"odoo_workcenter_id": 2}]}
 
+    def fetch_storage_config(self):
+        return {
+            "revision": 2,
+            "retention": {"default_days": 30, "by_source": {"repair": 30, "packing": 45}},
+            "free_space": {"min_gb": 20, "warn_gb": 50},
+        }
+
 
 @pytest.fixture
 def shop(tmp_path: Path, monkeypatch, data_root: Path):

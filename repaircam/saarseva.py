@@ -321,6 +321,10 @@ class SaarSevaClient:
         #: Camera-list revision last seen on a poll. None until saar-seva sends
         #: one — an older server that never does must not look like revision 0.
         self.last_config_revision: int | None = None
+        #: Storage-policy revision, tracked separately from the camera list:
+        #: the two change on entirely different schedules, and one number for
+        #: both would re-fetch a camera list because a retention window moved.
+        self.last_storage_revision: int | None = None
 
     # -- plumbing -----------------------------------------------------------
 
@@ -361,18 +365,25 @@ class SaarSevaClient:
             raise SaarSevaError(f"{path} did not return JSON: {exc}") from exc
 
     def _note_revision(self, payload: Any) -> None:
-        """Remember the camera-list revision that rode in on this poll.
+        """Remember the config revisions that rode in on this poll.
 
         Kept on the client rather than threaded through ``parse_active`` so
         those stay pure functions over the wire format — and so a saar-seva too
         old to send it simply leaves the last value alone rather than looking
         like revision 0, which would trigger a pointless re-sync.
         """
-        if isinstance(payload, dict) and "config_revision" in payload:
+        if not isinstance(payload, dict):
+            return
+        for field, attribute in (
+            ("config_revision", "last_config_revision"),
+            ("storage_revision", "last_storage_revision"),
+        ):
+            if field not in payload:
+                continue
             try:
-                self.last_config_revision = int(payload["config_revision"])
+                setattr(self, attribute, int(payload[field]))
             except (TypeError, ValueError):
-                log.debug("ignoring an unreadable config_revision")
+                log.debug("ignoring an unreadable %s", field)
 
     # -- contract -----------------------------------------------------------
 
@@ -468,6 +479,20 @@ class SaarSevaClient:
         if not isinstance(payload, dict):
             raise SaarSevaError(
                 f"expected a camera list, got {type(payload).__name__}"
+            )
+        return payload
+
+    def fetch_storage_config(self) -> dict:
+        """How long the shop keeps footage, as the admin panel has it.
+
+        Only called when the ``storage_revision`` seen on an ordinary poll
+        differs from the one this box last applied, so in steady state it is
+        never called at all.
+        """
+        payload = self._request("GET", "/repaircam/storage-config")
+        if not isinstance(payload, dict):
+            raise SaarSevaError(
+                f"expected a storage policy, got {type(payload).__name__}"
             )
         return payload
 

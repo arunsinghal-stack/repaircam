@@ -25,6 +25,7 @@ from repaircam.saarseva import (
     parse_active,
     parse_active_packing,
 )
+from repaircam import storage as storage_module
 from repaircam.trigger import Trigger
 
 from .conftest import StubBackend
@@ -59,10 +60,26 @@ class FakeClient:
         self.camera_fetches = 0
         self.camera_fail_with: str | None = None
         self.camera_fail_status: int | None = None
+        #: Storage-policy revision, tracked apart from the camera list.
+        self.storage_revision: int | None = None
+        self.storage_config: dict | None = None
+        self.storage_fetches = 0
+        self.storage_fail_with: str | None = None
+        self.storage_fail_status: int | None = None
 
     @property
     def last_config_revision(self):
         return self.config_revision
+
+    @property
+    def last_storage_revision(self):
+        return self.storage_revision
+
+    def fetch_storage_config(self):
+        if self.storage_fail_with:
+            raise SaarSevaError(self.storage_fail_with, status=self.storage_fail_status)
+        self.storage_fetches += 1
+        return self.storage_config or {}
 
     def fetch_camera_config(self):
         if self.camera_fail_with:
@@ -1068,3 +1085,148 @@ def test_a_bench_with_no_odoo_id_is_not_reported_as_vetoed(trigger):
     """WC4 has no odoo_workcenter_id, so work_centers is not why it is absent —
     saying otherwise would send someone editing the wrong file."""
     assert "WC4" not in trigger.vetoed_benches
+
+
+# --------------------------------------------------------------------------
+# the central retention policy
+# --------------------------------------------------------------------------
+
+
+def storage_payload(revision=2, packing=45):
+    return {
+        "revision": revision,
+        "retention": {"default_days": 30, "by_source": {"repair": 30, "packing": packing}},
+        "free_space": {"min_gb": 20, "warn_gb": 50},
+    }
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    path = tmp_path / "storage.yaml"
+    path.write_text(
+        'storage:\n  archive_dir: "/mnt/backup-drive/RepairCam"\n  keep_days_local: 5\n'
+    )
+    monkeypatch.setenv("REPAIRCAM_STORAGE", str(path))
+    return path
+
+
+def test_an_unchanged_storage_revision_costs_no_request(trigger, client, store):
+    client.storage_revision = 4
+    client.storage_config = storage_payload(revision=4)
+    trigger.tick()
+    assert client.storage_fetches == 1
+
+    for _ in range(3):
+        trigger.tick()
+    assert client.storage_fetches == 1
+
+
+def test_a_changed_storage_revision_is_fetched_and_applied(trigger, client, store):
+    client.storage_revision = 6
+    client.storage_config = storage_payload(revision=6, packing=60)
+
+    result = trigger.tick()
+
+    assert client.storage_fetches == 1
+    assert trigger.applied_storage_revision == 6
+    assert "packing" in result.storage_sync
+    assert storage_module.load_config(store).keep_days_for("packing") == 60
+
+
+def test_the_camera_list_is_not_refetched_when_only_storage_moves(trigger, client, store):
+    """Two revisions, tracked apart. One number for both would re-read a camera
+    list because somebody changed a retention window."""
+    client.config_revision = 2
+    client.camera_config = camera_payload(revision=2)
+    trigger.tick()
+    assert client.camera_fetches == 1
+
+    client.storage_revision = 9
+    client.storage_config = storage_payload(revision=9, packing=60)
+    trigger.tick()
+
+    assert client.camera_fetches == 1
+    assert client.storage_fetches == 1
+
+
+def test_this_recorders_own_settings_survive_the_sync(trigger, client, store):
+    client.storage_revision = 3
+    client.storage_config = storage_payload(revision=3)
+    trigger.tick()
+
+    cfg = storage_module.load_config(store)
+    assert cfg.archive_dir == "/mnt/backup-drive/RepairCam"
+    assert cfg.keep_days_local == 5
+
+
+def test_a_policy_that_reaches_for_this_machine_is_refused_and_reported(trigger, client, store):
+    before = store.read_text()
+    client.storage_revision = 3
+    payload = storage_payload(revision=3)
+    payload["delete_from_archive"] = True
+    client.storage_config = payload
+
+    result = trigger.tick()
+
+    assert result.ok                       # the poll itself is fine
+    assert store.read_text() == before     # nothing written
+    assert trigger.applied_storage_revision is None
+    assert "belongs to this recorder" in trigger.status()["storage_sync_error"]
+
+
+def test_an_unreachable_policy_is_not_a_fault(trigger, client, store):
+    """Same rule as everywhere else here: the cloud being away must never stop
+    the shop recording, and must never change what is on this disk."""
+    before = store.read_text()
+    client.storage_revision = 3
+    client.storage_fail_with = "could not reach saar-seva"
+
+    result = trigger.tick()
+
+    assert result.ok
+    assert store.read_text() == before
+    assert trigger.applied_storage_revision is None
+
+
+def test_a_saar_seva_without_the_endpoint_is_not_a_fault(trigger, client, store):
+    before = store.read_text()
+    client.storage_revision = 3
+    client.storage_fail_with = "GET /repaircam/storage-config failed: HTTP 404"
+    client.storage_fail_status = 404
+
+    result = trigger.tick()
+
+    assert result.ok
+    assert trigger.status()["storage_sync_error"] == ""
+    assert store.read_text() == before
+
+
+def test_a_saar_seva_that_sends_no_storage_revision_never_syncs(trigger, client, store):
+    client.storage_revision = None
+    trigger.tick()
+    assert client.storage_fetches == 0
+
+
+def test_revision_zero_never_replaces_this_shops_windows(trigger, client, store):
+    """Nobody has saved a policy centrally. Ours must not become theirs."""
+    before = store.read_text()
+    client.storage_revision = 0
+
+    trigger.tick()
+
+    assert client.storage_fetches == 0
+    assert store.read_text() == before
+
+
+def test_the_worker_is_handed_the_new_policy_immediately(trigger, client, store, catalogue):
+    """Otherwise the change sits unread for up to ten minutes and the status
+    page shows settings nobody asked for any more — and, worse, a shortened
+    window is not staged until long after it was typed."""
+    worker = storage_module.StorageWorker(catalogue, config_path=store)
+    trigger.storage_worker = worker
+    client.storage_revision = 5
+    client.storage_config = storage_payload(revision=5, packing=60)
+
+    trigger.tick()
+
+    assert worker.cfg.keep_days_for("packing") == 60

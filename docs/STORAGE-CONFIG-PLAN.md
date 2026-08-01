@@ -3,8 +3,9 @@
 Set the retention windows from saar-seva's admin panel instead of editing
 `storage.yaml` over SSH, the same way the camera list already works.
 
-**PLAN. Phases 1 and 4 are BUILT (2026-08-01); 2, 3, 5, 6 are not started.**
-Written after the file below was created by hand on the shop recorder.
+**Phases 1-4 are BUILT (2026-08-01); 5 and 6 are not started, so there is no
+admin screen yet — the endpoints exist and nothing calls them.** Written after
+the file below was created by hand on the shop recorder.
 
 ---
 
@@ -240,10 +241,15 @@ Each phase is useful alone and safe to stop after.
 
 1. ~~**Recorder reloads config without a restart.**~~ **BUILT 2026-08-01.**
    No protocol change; useful whether or not the rest happens.
-2. **saar-seva: `SystemSetting` + `GET /repaircam/storage-config` +
-   `storage_revision` on both poll endpoints.**
-3. **Recorder: fetch, validate, merge-write, report.** Windows become central.
-   Local keys are untouched by construction.
+2. ~~**saar-seva: `SystemSetting` + `GET /repaircam/storage-config` +
+   `storage_revision` on both poll endpoints.**~~ **BUILT 2026-08-01** as
+   `backend/app/storage_config.py`, with the admin GET/PUT alongside it so
+   phase 6 is only the screen.
+3. ~~**Recorder: fetch, validate, merge-write, report.**~~ **BUILT 2026-08-01**
+   as `storagesync.py`. Both revisions are tracked apart, so a retention change
+   does not re-read the camera list. The written file is in two labelled
+   halves — this box's own settings, and the admin panel's — because somebody
+   opening it to change a number needs to know which of their edits survives.
 4. ~~**The staging guard for reductions.**~~ **BUILT 2026-08-01**, ahead of
    2 and 3: the same risk already exists through a hand edit to storage.yaml.
 5. **Recorder state in the heartbeat, and the read-only half of the panel.**
