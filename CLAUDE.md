@@ -154,7 +154,9 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   only means somebody asked), the invoice PDF (fetched from Odoo by move id, so the number
   existing is the document existing), and the box label (`PackingBox.label_printed_at`).
   They go in and on the box, so packing cannot happen before them. The job is `packed`
-  throughout. At that moment the
+  throughout. **The e-way bill is NOT on the list** — the courier generates it and it does
+  not go in the box; adding it "for symmetry" would make every order unfilmable pending
+  something SAAR does not control. At that moment the
   job has already DROPPED OFF the packer's queue (`GET /packer/jobs` filters
   `ready|packing`), so there is no screen with a Record button on it — the gate cannot just
   be moved. Either role may film it (decided: varies by day), so both the Packing and

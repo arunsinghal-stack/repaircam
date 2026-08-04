@@ -169,13 +169,17 @@ asserting the note lands on the OUT and never on the PICK.
 
 ---
 
-## Open question raised by this correction
+### The e-way bill is NOT one of them
 
-**Is the e-way bill one of the required documents?** The owner named four; the
-code also has `courier_eway_number` and an `eway_generator` setting (SAAR or the
-courier). If an e-way bill has to be in the box too, it joins the list — and if
-the courier generates it, "ready" may depend on something SAAR does not hold.
-Not assumed either way.
+**Answered 2026-08-01: the courier generates it, and it does not go in the box.**
+So `courier_eway_number` stays out of `packing_ready()` — deliberately, and
+recorded here because it is exactly the kind of field a later reader would add
+to the list for symmetry, and thereby make every order unfilmable until a
+courier got round to something SAAR does not control.
+
+That is the general shape of the risk in this gate: each condition added blocks
+recording until it is satisfied, so a wrong one does not produce a bad clip, it
+produces silence. The four are the four.
 
 ## Open questions
 
