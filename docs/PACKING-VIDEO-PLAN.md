@@ -334,10 +334,26 @@ keep for a second reason: two *people* can reach for the same bench.
    which, or it looks broken rather than pending.
 4. People mapping: include dispatchers.
 
-**saar-seva frontend**
-5. `Packing.jsx`: the panel appears in the new window only, not during
-   `packing`.
-6. `Dispatch.jsx`: the same panel, same component.
+**saar-seva frontend** — one component, mounted twice.
+
+5. `Packing.jsx`, on the job detail (`/warehouse/packing/<job>`): same place the
+   panel already sits, different moment. It no longer appears during `packing`.
+   The job returns to the packer's queue under its own heading — *"Ready to box"*
+   — so it is clear this is a later stage and not a job that came back broken.
+6. `Dispatch.jsx`, on the order detail: **directly below the "Invoice for AWB"
+   card**, which is where the AWB and invoice are actually finished. Somebody
+   who has just completed the paperwork should find the Record button in their
+   eyeline, not on another screen.
+
+Not ready yet is shown, never hidden: *"Waiting for: AWB on shipment 2,
+invoice"*, from the server's own verdict. A button that silently is not there
+is indistinguishable from a feature that is broken.
+
+**A fourth copy already exists, which is the argument for one definition.**
+`Dispatch.jsx` computes `allComplete` — courier, AWB, weight, expected date per
+shipment — duplicating the backend's dispatch gate in JavaScript. Adding a
+fifth, hand-written, for recording readiness is how the button and the label
+end up disagreeing. `packing_ready()` is computed server-side and sent.
 
 **RepairCam** — nothing. The recorder polls `/pack/active`, which is driven by
 `PackingRecording` rows, not by job status. The clip's `source` stays
