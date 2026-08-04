@@ -193,3 +193,105 @@ Recommended order:
 1. The three bench checks (focus, a real 20s clip, a real pause-and-resume) — 30 minutes.
 2. Phase 5 switched on and proven with one real repair.
 3. This.
+
+---
+
+# Correction: we have been filming the wrong stage
+
+**Raised 2026-08-01 by the owner. Nothing built yet.**
+
+The plan above puts Record on the packer's screen while the job is `packing`.
+That is the wrong moment. The physical boxing — invoice in the box, AWB on the
+outside, box sealed — happens **after logistics has punched the shipment and
+requested the invoice.** What the current button films is serial verification,
+which is not what anyone will want to look at when a customer says the box was
+short an item.
+
+## What the workflow actually is
+
+| # | Who | What | `PackingJob` |
+|---|---|---|---|
+| 1 | packer | Start packing | `packing` |
+| 2 | packer | serials into boxes, labels printed, complete | `packed` |
+| 3 | **dispatcher** | courier cost + COD per shipment, **request invoice** | `invoice_requested_at` set |
+| 4 | accounts | posts the invoice | invoice number exists |
+| 5 | **packer or dispatcher** | **the actual boxing** | still `packed` |
+| 6 | dispatcher | AWB, dispatch complete | `dispatched` |
+
+**Step 5 is what needs filming.** Steps 1–2 do not.
+
+## The part that makes this more than a one-line change
+
+At step 5 **there is no screen with a Record button on it.**
+
+- The packer's queue (`GET /packer/jobs`) filters `status IN ('ready','packing')`.
+  The job vanished from the packer's screen at step 2.
+- The Dispatch screen does list `packed` jobs — but it is a different role and
+  has never had a camera panel.
+
+So the gate cannot simply be moved; something has to *show* the job during the
+window we want filmed.
+
+## The window
+
+Start is allowed when **`invoice_requested_at IS NOT NULL` and the job is still
+`packed`**. Before that there is nothing to box; after `dispatched` the box has
+left the building.
+
+**Stop stays ungated**, as it already is. A packer whose job goes to
+`dispatched` while the camera is running must still be able to stop it, or that
+bench films for ever.
+
+## Who presses it
+
+**Either the packer or the dispatcher — decided 2026-08-01, it varies by day.**
+So both screens carry the panel and both roles may record:
+
+- the record endpoints accept packer **or** dispatcher, the way
+  `save_bench_workcenters` already accepts technician **or** packer;
+- **dispatchers must therefore be mappable to a work centre** in Admin → TRC
+  settings → People, exactly as packers became mappable in saar-seva PR #473.
+  An unmapped dispatcher pressing Record gets the same "no bench" refusal a
+  packer does, and that refusal has to name the fix.
+
+The "one camera cannot film two jobs" guard already exists, and now earns its
+keep for a second reason: two *people* can reach for the same bench.
+
+## What has to change
+
+**saar-seva backend**
+1. `packer_record_start`: replace the `status != "packing"` refusal with
+   `invoice_requested_at is None` → *"Logistics has not requested the invoice
+   yet — the box is not being packed."* Add a refusal for `dispatched`.
+2. Both record endpoints and the recordings/camera-light endpoint: accept
+   packer **or** dispatcher.
+3. `GET /packer/jobs`: also return jobs that are `packed` **with**
+   `invoice_requested_at` set — under a clearly separate heading. A packer who
+   sees a job they already completed sitting back in their queue with no
+   explanation will reasonably think something went wrong.
+4. People mapping: include dispatchers.
+
+**saar-seva frontend**
+5. `Packing.jsx`: the panel appears in the new window only, not during
+   `packing`.
+6. `Dispatch.jsx`: the same panel, same component.
+
+**RepairCam** — nothing. The recorder polls `/pack/active`, which is driven by
+`PackingRecording` rows, not by job status. The clip's `source` stays
+`packing`, so the 45-day archive window still applies. The link still goes to
+the **outgoing** Delivery Order's chatter.
+
+## What this costs if we get it wrong
+
+Filming step 1–2 instead of step 5 produces clips that look like evidence and
+answer no dispute anybody actually raises. Filming nothing at all — which is
+what happens if the gate moves without step 3 — is at least honest, and the
+status page would say so. **Of the two, do not ship the gate change without the
+queue change.**
+
+## Sequencing
+
+Backend gate + roles + queue first (it is testable on staging with no camera),
+then the two screens, then the People mapping. Nothing here touches recording
+that already works: repair benches are unaffected, and packing video has never
+run in the shop, so there is no in-flight behaviour to preserve.

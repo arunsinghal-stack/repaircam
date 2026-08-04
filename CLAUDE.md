@@ -147,10 +147,18 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - saar-seva side: `routers/repaircam_pack.py` (`GET /pack/active`, `POST /pack/recordings`)
   + `PackingRecording` model + packer Record/Stop in `warehouse.py` + the panel in
   `pages/warehouse/Packing.jsx`. RepairCam side: `saarseva.py` + `trigger.py`.
-- **Record appears only while the job is `packing`**, enforced in the endpoint too — a clip
-  of an empty bench looks like evidence. **Stop is never gated** and the panel stays while a
-  clip runs, whatever the status: otherwise a packer who completes the order with the camera
-  on cannot stop it and that bench films for ever.
+- **THE GATE IS WRONG AND IS BEING CHANGED (owner, 2026-08-01).** Record currently appears
+  while the job is `packing` — that films serial verification. The **actual boxing happens
+  after logistics requests the invoice** (`PackingJob.invoice_requested_at`, dispatcher's
+  `POST /dispatch/jobs/{id}/request-invoice`), while the job is `packed`. At that moment the
+  job has already DROPPED OFF the packer's queue (`GET /packer/jobs` filters
+  `ready|packing`), so there is no screen with a Record button on it — the gate cannot just
+  be moved. Either role may film it (decided: varies by day), so both the Packing and
+  Dispatch screens get the panel and dispatchers become mappable to a work centre. Plan:
+  the "Correction" section at the end of docs/PACKING-VIDEO-PLAN.md. NOT BUILT.
+- **Stop is never gated** and the panel stays while a clip runs, whatever the status:
+  otherwise a packer who completes the order with the camera on cannot stop it and that
+  bench films for ever.
 - The camera light comes from the packer's OWN recordings endpoint, not `/trc/recorder-state`
   — that one is technician-authenticated and **a packer is not a technician**. The same role
   split made packing benches unmappable until saar-seva PR #473.
