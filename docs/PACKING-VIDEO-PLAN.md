@@ -210,7 +210,9 @@ Recommended order:
 
 # Correction: we have been filming the wrong stage
 
-**Raised 2026-08-01 by the owner. Nothing built yet.**
+**Raised 2026-08-01 by the owner. BUILT the same day** — saar-seva branch
+`claude/packing-video-document-gate`, not merged, never run against a real
+database. RepairCam itself needed no change.
 
 The plan above puts Record on the packer's screen while the job is `packing`.
 That is the wrong moment. The physical boxing — invoice in the box, AWB on the

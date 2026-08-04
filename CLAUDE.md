@@ -147,7 +147,7 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - saar-seva side: `routers/repaircam_pack.py` (`GET /pack/active`, `POST /pack/recordings`)
   + `PackingRecording` model + packer Record/Stop in `warehouse.py` + the panel in
   `pages/warehouse/Packing.jsx`. RepairCam side: `saarseva.py` + `trigger.py`.
-- **THE GATE IS WRONG AND IS BEING CHANGED (owner, 2026-08-01).** Record currently appears
+- **THE GATE WAS WRONG; FIXED 2026-08-01 (saar-seva branch `claude/packing-video-document-gate`, unmerged).** Record currently appears
   while the job is `packing` — that films serial verification. The **actual boxing happens
   the DOCUMENTS exist** — AWB (`Shipment.awb_number`, unless `is_self_pickup`), invoice
   number (`PackingJob.odoo_invoice_move_id`, i.e. accounts POSTED it — `invoice_requested_at`
@@ -160,8 +160,11 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   job has already DROPPED OFF the packer's queue (`GET /packer/jobs` filters
   `ready|packing`), so there is no screen with a Record button on it — the gate cannot just
   be moved. Either role may film it (decided: varies by day), so both the Packing and
-  Dispatch screens get the panel and dispatchers become mappable to a work centre. Plan:
-  the "Correction" section at the end of docs/PACKING-VIDEO-PLAN.md. NOT BUILT.
+  Dispatch screens get the panel and dispatchers become mappable to a work centre. The rule is `backend/app/packing_gate.py`
+  (`packing_ready`), computed ONCE and sent to both screens — the queue row, the panel and
+  the gate must not hold three copies of a four-part condition. `PackingVideoPanel.jsx` is
+  one component mounted on both screens. Full reasoning: the "Correction" section at the end
+  of docs/PACKING-VIDEO-PLAN.md.
 - **Stop is never gated** and the panel stays while a clip runs, whatever the status:
   otherwise a packer who completes the order with the camera on cannot stop it and that
   bench films for ever.
