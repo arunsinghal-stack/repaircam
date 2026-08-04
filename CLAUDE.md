@@ -149,8 +149,12 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   `pages/warehouse/Packing.jsx`. RepairCam side: `saarseva.py` + `trigger.py`.
 - **THE GATE IS WRONG AND IS BEING CHANGED (owner, 2026-08-01).** Record currently appears
   while the job is `packing` — that films serial verification. The **actual boxing happens
-  after logistics requests the invoice** (`PackingJob.invoice_requested_at`, dispatcher's
-  `POST /dispatch/jobs/{id}/request-invoice`), while the job is `packed`. At that moment the
+  the DOCUMENTS exist** — AWB (`Shipment.awb_number`, unless `is_self_pickup`), invoice
+  number (`PackingJob.odoo_invoice_move_id`, i.e. accounts POSTED it — `invoice_requested_at`
+  only means somebody asked), the invoice PDF (fetched from Odoo by move id, so the number
+  existing is the document existing), and the box label (`PackingBox.label_printed_at`).
+  They go in and on the box, so packing cannot happen before them. The job is `packed`
+  throughout. At that moment the
   job has already DROPPED OFF the packer's queue (`GET /packer/jobs` filters
   `ready|packing`), so there is no screen with a Record button on it — the gate cannot just
   be moved. Either role may film it (decided: varies by day), so both the Packing and
