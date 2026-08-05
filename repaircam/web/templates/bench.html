@@ -93,8 +93,28 @@
     </form>
     {% endif %}
 
+    {% if status.running_long_s %}
+      {# Nobody packs one order for four hours. Reported, never stopped: cutting
+         a clip for being long would be RepairCam deciding it knows better than
+         the shop, and footage that stops while the work continues is the worse
+         failure. #}
+      <div class="flash flash-error">
+        This bench has been recording for
+        {{ (status.running_long_s / 3600)|round(1) }} hours.
+        That is almost certainly a session nobody closed — check whether the job
+        it is filming is really still running.
+      </div>
+    {% endif %}
     {% if status.last_error %}
-      <div class="flash flash-error">{{ status.last_error }}</div>
+      <div class="flash {{ 'flash-error' if status.error_is_current else '' }}">
+        {{ status.last_error }}
+        {% if not status.error_is_current and status.last_error_age_s %}
+          <div class="muted small">
+            This happened {{ (status.last_error_age_s / 3600)|round(1) }} hours ago
+            and is not a current fault — it is left here in case it is useful.
+          </div>
+        {% endif %}
+      </div>
     {% endif %}
   </section>
 </div>

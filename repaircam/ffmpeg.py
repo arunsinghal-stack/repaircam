@@ -118,6 +118,78 @@ def run(command: list[str], *, timeout: float = 60) -> subprocess.CompletedProce
 # --------------------------------------------------------------------------
 
 
+#: How long to let ffmpeg finalise after 'q' before escalating. Generous: a
+#: clean finish is worth waiting for, and the alternative used to be a lost
+#: clip.
+STOP_QUIT_S = 20.0
+
+#: And after SIGTERM, before the kill nobody wants.
+STOP_TERM_S = 10.0
+
+#: Lines ffmpeg prints that say nothing about why a capture failed.
+#:
+#: "Non-monotonous DTS" is the specific one that cost an afternoon: it is a
+#: routine timestamp complaint from an RTSP stream, it is very often the LAST
+#: thing printed, and reporting the last line meant a bench that had been
+#: killed mid-write displayed a harmless warning as its cause. The real reason
+#: is almost always earlier in the output.
+_NOISE = (
+    "non-monotonous dts",
+    "past duration",
+    "last message repeated",
+    "deprecated",
+    "guessed channel layout",
+    "timestamps are unset",
+    "first timestamp is not",
+    "co located pocs",
+    "vbv buffer size",
+)
+
+
+def explain_failure(stderr: str, *, returncode: int | None = None, ended_by: str = "") -> str:
+    """The most useful one-line reason a capture failed.
+
+    Scans BACKWARDS for the last line that is actually about a problem,
+    skipping ffmpeg's routine grumbling. Falls back to the last real line, then
+    to the exit code — never to nothing, because "it failed" with no reason is
+    what sends somebody to check a camera that was fine all along.
+    """
+    if ended_by == "killed":
+        # This one outranks anything in the output. The file was cut off
+        # mid-write; whatever ffmpeg last complained about is beside the point.
+        return (
+            "ffmpeg had to be killed — it stopped responding, so the recording "
+            "was cut off mid-write"
+        )
+
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if not any(noise in line.lower() for noise in _NOISE):
+            return line
+    if lines:
+        return lines[-1]
+    if returncode is not None:
+        return f"ffmpeg exited with code {returncode}"
+    return "the capture failed with no output from ffmpeg"
+
+
+def repair_command(source: Path, dest: Path) -> list[str]:
+    """Remux a damaged recording into a clean file.
+
+    Best effort. A fragmented MP4 that was truncated usually reads back fine,
+    which is the whole reason segments are written fragmented. A file with no
+    header at all cannot be rescued this way and the caller is told so rather
+    than left with a zero-byte "repair".
+    """
+    return [
+        FFMPEG, "-hide_banner", "-loglevel", "error",
+        "-err_detect", "ignore_err",
+        "-i", str(source),
+        "-c", "copy", "-movflags", "+faststart",
+        "-y", str(dest),
+    ]
+
+
 def record_command(
     url: str,
     dest: Path,
@@ -148,11 +220,24 @@ def record_command(
     command += ["-c:v", "copy"]
     command += ["-c:a", "aac", "-b:a", "64k"] if audio else ["-an"]
     command += [
-        # Keeps the file playable if the process is ever killed mid-write, and
-        # puts the index at the front so the browser can seek without a full
-        # download.
+        # A FRAGMENTED MP4, and this is the difference between losing a
+        # recording and keeping it.
+        #
+        # This used to say +faststart with a comment claiming it kept the file
+        # playable if the process was killed. It does the opposite: faststart
+        # is a pass that runs when ffmpeg EXITS, moving the index to the front.
+        # Kill ffmpeg — or cut the power — and the index was never written at
+        # all, so the file has no moov atom and nothing can open it. On
+        # 2026-08-05 a stalled RTSP input ignored 'q' and SIGTERM, was killed,
+        # and the whole packing session was lost exactly this way.
+        #
+        # +frag_keyframe+empty_moov writes a usable header up front and closes
+        # a fragment at every keyframe, so a truncated file plays up to the
+        # last complete fragment. The joined clip is still written with
+        # faststart (see concat_command) — that runs on a short-lived process
+        # writing to local disk, which is not the one at risk.
         "-movflags",
-        "+faststart",
+        "+frag_keyframe+empty_moov+default_base_moof",
         "-y",
         str(dest),
     ]
@@ -424,6 +509,13 @@ class RecordingProcess:
         except OSError as exc:
             raise FFmpegError(f"could not start ffmpeg: {exc}") from exc
         self._stderr = ""
+        #: How this process ended: "" while running, then "quit" (it accepted
+        #: 'q' and finalised), "terminated" (SIGTERM) or "killed" (SIGKILL).
+        #: Kept because the exit code cannot tell them apart, and the
+        #: difference is the difference between a clean clip and a truncated
+        #: one — which nobody could see when a kill was reported as whatever
+        #: ffmpeg happened to print last.
+        self.ended_by = ""
 
     @property
     def running(self) -> bool:
@@ -447,9 +539,20 @@ class RecordingProcess:
             raise
         return self._proc.returncode
 
-    def stop(self, timeout: float = 10) -> int:
-        """Ask ffmpeg to finalise the file, then wait for it."""
+    def stop(self, timeout: float = STOP_QUIT_S) -> int:
+        """Ask ffmpeg to finalise the file, then wait for it.
+
+        Three stages with real headroom between them. A stalled RTSP input can
+        leave ffmpeg unresponsive to 'q' for a surprisingly long time, and the
+        old ten-then-five seconds was not enough: on 2026-08-05 it reached the
+        kill, and a killed ffmpeg used to mean a lost recording.
+
+        Every stage is recorded in ``ended_by``, because the exit code cannot
+        distinguish "finalised cleanly" from "we killed it" and the caller has
+        to be able to say which.
+        """
         if not self.running:
+            self.ended_by = self.ended_by or "quit"
             return self._proc.returncode
 
         try:
@@ -462,17 +565,23 @@ class RecordingProcess:
         try:
             _, err = self._proc.communicate(timeout=timeout)
             self._stderr = redact_text(err or "")
+            self.ended_by = "quit"
             return self._proc.returncode
         except subprocess.TimeoutExpired:
-            log.warning("ffmpeg ignored 'q' for %s, terminating", self.dest.name)
+            log.warning(
+                "ffmpeg ignored 'q' for %.0fs on %s, terminating",
+                timeout, self.dest.name,
+            )
 
         self._proc.terminate()
         try:
-            _, err = self._proc.communicate(timeout=5)
+            _, err = self._proc.communicate(timeout=STOP_TERM_S)
             self._stderr = redact_text(err or "")
+            self.ended_by = "terminated"
         except subprocess.TimeoutExpired:
             log.error("ffmpeg would not terminate for %s, killing", self.dest.name)
             self._proc.kill()
             _, err = self._proc.communicate()
             self._stderr = redact_text(err or "")
+            self.ended_by = "killed"
         return self._proc.returncode

@@ -277,6 +277,26 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - Production already answers **503** on the RepairCam endpoints, which means the code is
   deployed and only the key is missing. 401 would mean the key is set and ours is wrong.
 
+## Recording reliability (fixed 2026-08-05, after a lost packing session)
+- **Segments are FRAGMENTED MP4** (`+frag_keyframe+empty_moov`), not `+faststart`. faststart
+  moves the index at EXIT, so a killed ffmpeg — or a power cut — leaves a file with no moov
+  atom that nothing can open. That is how a whole packing session was lost on 2026-08-05.
+  The JOINED clip still gets `+faststart` (short-lived local process, not the one at risk).
+  **This also de-risks the power-cut test**, though it is still not run.
+- Stop is q (20s) -> SIGTERM (10s) -> SIGKILL, and `RecordingProcess.ended_by` records which,
+  because an exit code cannot tell "finalised" from "we killed it". A killed capture is
+  **salvaged** by remuxing before being called a failure.
+- **`ffmpeg.explain_failure()` — never report the LAST stderr line as the cause.** RTSP ends
+  with routine grumbles (`Non-monotonous DTS`, `past duration`); the real reason is earlier.
+  Reporting the last line made a killed bench display a harmless timestamp warning, and cost
+  an afternoon of checking a camera that was fine.
+- **A failure is a fact with a time on it** (`ERROR_STALE_AFTER_S`, 30 min). A bench showed
+  "Camera problem" for two days off one stale string. `error_is_current` drives the light;
+  the message is still shown, dated.
+- **`RUNNING_LONG_S` (4h) is REPORTED, never enforced.** Nobody packs one order for four
+  hours, so it is almost certainly a session nobody closed — but cutting a clip because it
+  is long would stop footage while work continues, which is the worse failure.
+
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.
   A template lives at `repaircam/cameras.example.yaml`.

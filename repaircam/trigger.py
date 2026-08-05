@@ -619,7 +619,10 @@ class Trigger:
             return "connecting"
         if status.get("state") == "paused":
             return "paused"
-        if status.get("state") == "error" or status.get("last_error"):
+        # A failure from hours ago is history. Reporting it as a current fault
+        # left a bench showing "Camera problem" for two days off one stale
+        # string, and sent somebody to check a camera that was working.
+        if status.get("state") == "error" or status.get("error_is_current"):
             return "error"
         return "idle"
 

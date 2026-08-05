@@ -48,6 +48,20 @@ class State(str, Enum):
 #: second; several seconds means the camera is not answering.
 CONNECT_WARN_S = 5.0
 
+#: After this, a failure is history rather than a fault to act on. A bench that
+#: has not failed since yesterday must not still be showing a red light today —
+#: that is how somebody ends up checking a camera that was never broken.
+ERROR_STALE_AFTER_S = 30 * 60.0
+
+#: A single recording running longer than this is almost certainly a session
+#: nobody closed, not real work. Nobody packs one order for four hours.
+#:
+#: It is REPORTED, never stopped automatically. Cutting a clip because it is
+#: long would be RepairCam deciding it knows better than the shop, and the one
+#: failure worse than a wasted disk is footage that stops while the work is
+#: still going on.
+RUNNING_LONG_S = 4 * 3600.0
+
 
 def slugify(value: str, *, max_length: int = 40) -> str:
     """Make a string safe for a filename.
@@ -117,6 +131,9 @@ class Recorder:
         self._session: Session | None = None
         self._capture = None
         self._last_error = ""
+        #: When it happened, so a stale failure can stop being reported as a
+        #: current one.
+        self._last_error_at: float = 0.0
 
     # -- introspection ------------------------------------------------------
 
@@ -140,6 +157,34 @@ class Recorder:
     @property
     def last_error(self) -> str:
         return self._last_error
+
+    @property
+    def last_error_age(self) -> float | None:
+        """Seconds since the last failure, or None if there has not been one.
+
+        The bench light used to shout "Camera problem" indefinitely off a
+        single stale string: a hiccup on Monday still read as a current fault
+        on Wednesday, and somebody went looking at a camera that was fine.
+        An error is a fact with a time on it, so it travels with one.
+        """
+        return None if not self._last_error_at else time.time() - self._last_error_at
+
+    def _running_long(self) -> float:
+        """Seconds this recording has been going, if that is implausibly long.
+
+        0.0 otherwise, so a caller can treat it as a plain "is this a problem"
+        flag without a second lookup.
+        """
+        capture = self._capture
+        if capture is None or not capture.running:
+            return 0.0
+        elapsed = capture.capturing_elapsed
+        return elapsed if elapsed >= RUNNING_LONG_S else 0.0
+
+    def _fail(self, message: str) -> None:
+        """Record a failure, with when it happened."""
+        self._last_error = message
+        self._last_error_at = time.time()
 
     def status(self) -> dict:
         """Everything the dashboard needs about this bench, in one call."""
@@ -182,6 +227,14 @@ class Recorder:
             "labels": session.labels.as_dict() if session else JobLabels().as_dict(),
             "started_at": session.started_iso if session else None,
             "last_error": self._last_error,
+            "last_error_age_s": self.last_error_age,
+            # A failure hours old is history, not a fault to act on. Kept in
+            # the payload either way so a screen can still show "last failed
+            # 2 days ago" rather than pretending it never happened.
+            "error_is_current": bool(
+                self._last_error and (self.last_error_age or 0) < ERROR_STALE_AFTER_S
+            ),
+            "running_long_s": self._running_long(),
         }
 
     # -- the three buttons --------------------------------------------------
@@ -208,7 +261,7 @@ class Recorder:
                 try:
                     storage.check_before_recording()
                 except storage.DiskFull as exc:
-                    self._last_error = str(exc)
+                    self._fail(str(exc))
                     self.catalogue.log_event(
                         "error", work_center=self.work_center, detail=f"disk full: {exc}"
                     )
@@ -246,13 +299,14 @@ class Recorder:
             try:
                 self._capture = self.backend.start(dest)
             except (CaptureError, ffmpeg.FFmpegError) as exc:
-                self._last_error = str(exc)
+                self._fail(str(exc))
                 self.catalogue.log_event(
                     "error", work_center=self.work_center, detail=f"start failed: {exc}"
                 )
                 raise RecorderError(f"Could not start recording on {self.work_center}: {exc}") from exc
 
             self._last_error = ""
+            self._last_error_at = 0.0
             self._state = State.RECORDING
             log.info("%s: recording segment %d", self.work_center, len(session.segments) + 1)
             return session
@@ -304,7 +358,7 @@ class Recorder:
             recording = self._finalise(session, usable)
         except Exception as exc:
             with self._lock:
-                self._last_error = str(exc)
+                self._fail(str(exc))
                 self._state = State.PAUSED  # segments survive; Done can be retried
             self.catalogue.log_event(
                 "error", work_center=self.work_center, detail=f"finalise failed: {exc}"
@@ -369,12 +423,12 @@ class Recorder:
         self._state = State.PAUSED
 
         if not segment.ok:
-            self._last_error = segment.error or "the camera stopped unexpectedly"
+            self._fail(segment.error or "the camera stopped unexpectedly")
             self.catalogue.log_event(
                 "error", work_center=self.work_center, detail=self._last_error
             )
         elif unexpected:
-            self._last_error = "recording ended on its own — check the camera and cable"
+            self._fail("recording ended on its own — check the camera and cable")
         return segment
 
     def _finalise(self, session: Session, usable: list[Segment]) -> Recording:

@@ -51,13 +51,26 @@ class RtspCapture(ActiveCapture):
         # our normal Stop, not a failure — as long as a file came out of it.
         ok = returncode in (0, 255) and wrote_something
 
+        ended_by = getattr(self._process, "ended_by", "")
+
+        # A killed ffmpeg leaves the file cut off mid-write. Segments are
+        # written as fragmented MP4 precisely so that is survivable, so try to
+        # read it back and keep whatever footage is there rather than throwing
+        # the session away — which is what used to happen.
+        if ended_by == "killed" and wrote_something:
+            if self._salvage(path):
+                ok = True
+
         error = ""
         if not ok:
-            error = (self._process.stderr or "").strip().splitlines()[-1:] or [
-                f"ffmpeg exited with code {returncode}"
-            ]
-            error = error[0]
+            error = ffmpeg.explain_failure(
+                self._process.stderr, returncode=returncode, ended_by=ended_by
+            )
             log.error("capture failed for %s: %s", path.name, error)
+        elif ended_by == "killed":
+            log.warning(
+                "%s: ffmpeg had to be killed, but the footage was recovered", path.name
+            )
 
         self._segment = Segment(
             path=path,
@@ -71,7 +84,28 @@ class RtspCapture(ActiveCapture):
         )
         return self._segment
 
-    def stop(self, timeout: float = 10) -> Segment:
+    @staticmethod
+    def _salvage(path: Path) -> bool:
+        """Remux a cut-off recording in place. True if footage survived.
+
+        Cheap to attempt and there is nothing to lose: the original is only
+        replaced once a readable file exists beside it, so a failed salvage
+        leaves exactly what was there before.
+        """
+        repaired = path.with_suffix(".repair.mp4")
+        try:
+            ffmpeg.run(ffmpeg.repair_command(path, repaired), timeout=120)
+            if repaired.exists() and repaired.stat().st_size > 0:
+                repaired.replace(path)
+                return True
+        except (ffmpeg.FFmpegError, OSError) as exc:
+            log.warning("could not salvage %s: %s", path.name, exc)
+        finally:
+            if repaired.exists():
+                repaired.unlink(missing_ok=True)
+        return False
+
+    def stop(self, timeout: float = ffmpeg.STOP_QUIT_S) -> Segment:
         return self._finish(self._process.stop(timeout=timeout))
 
     def wait(self, timeout: float | None = None) -> Segment:
