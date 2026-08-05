@@ -9,14 +9,16 @@ something is wrong, and what proved the camera works in Phase 0:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import sys
 import time
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import __version__, config, ffmpeg, recovery, saarseva
+from . import __version__, config, ffmpeg, recovery, saarseva, storage, storagesync
 from .backends import CaptureError, build_backend
 from .catalogue import Catalogue, JobLabels
 from .config import ConfigError
@@ -26,6 +28,7 @@ log = logging.getLogger("repaircam")
 
 OK = "OK  "
 BAD = "FAIL"
+WARN = "WARN"
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -64,6 +67,17 @@ def _add_label_arguments(parser: argparse.ArgumentParser) -> None:
 
 def cmd_cameras(args: argparse.Namespace) -> int:
     """List configured benches, and optionally test each camera."""
+    if getattr(args, "clear_removed", False):
+        from .trigger import Trigger
+
+        gone = camera_removals()
+        Catalogue().set_setting(Trigger.REMOVED_KEY, "")
+        if gone:
+            print(f"{OK} acknowledged: {', '.join(gone['benches'])} were meant to go.")
+        else:
+            print(f"{OK} nothing to acknowledge.")
+        return 0
+
     if args.sync and _sync_cameras_now() != 0:
         return 1
 
@@ -130,6 +144,282 @@ def _sync_cameras_now() -> int:
     print(f"{OK} {result.summary()}")
     if result.deferred:
         print("     Those benches are recording; run this again when they finish.")
+    return 0
+
+
+def camera_removals(catalogue: Catalogue | None = None) -> dict:
+    """The last central sync that DELETED benches, if it has not been cleared.
+
+    Kept out of the log because a removal is not a passing event: the bench
+    stops existing, stops recording, and every subsequent check reports the
+    smaller shop as perfectly healthy. This is what makes it keep saying so.
+    """
+    from .trigger import Trigger
+
+    try:
+        raw = (catalogue or Catalogue()).get_setting(Trigger.REMOVED_KEY, "")
+        payload = json.loads(raw) if raw else {}
+    except (OSError, ValueError):
+        return {}
+    return payload if payload.get("benches") else {}
+
+
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """Everything that has to be true before a shop relies on this box.
+
+    One command rather than a checklist, because a checklist has to be
+    remembered and this does not. Every failure says what to do about it — the
+    person running this is standing at the recorder, not reading the source.
+    """
+    checks: list[tuple[str, str, str]] = []  # (marker, title, detail)
+
+    def add(ok, title, detail="", warn=False):
+        checks.append((WARN if warn else (OK if ok else BAD), title, detail))
+
+    print("RepairCam pre-flight\n")
+
+    # -- the box itself -----------------------------------------------------
+    add(ffmpeg.available(), "ffmpeg installed",
+        "" if ffmpeg.available() else "sudo apt update && sudo apt install -y ffmpeg")
+
+    report = storage.disk_report()
+    add(report.state != "full", "disk has room", report.message,
+        warn=report.state == "low")
+
+    store_cfg = storage.load_config()
+    if store_cfg.archive_dir:
+        archive = store_cfg.archive_path
+        there = storage.reachable(archive)
+        add(there, "archive reachable",
+            f"{archive}" if there else f"{archive} is not there — is it mounted?")
+    else:
+        add(False, "second copy of the footage",
+            "No archive_dir in storage.yaml — this machine holds the ONLY copy of "
+            "every clip. A theft or a dead drive loses all of it.", warn=True)
+
+    # -- benches ------------------------------------------------------------
+    try:
+        cameras = config.load_cameras()
+    except ConfigError as exc:
+        add(False, "cameras.yaml", str(exc))
+        cameras = {}
+
+    if cameras:
+        add(True, f"{len(cameras)} bench(es) configured", ", ".join(sorted(cameras)))
+
+        # A shrinking shop looks identical to a small one. Say which benches
+        # went, and when, until somebody confirms it was meant.
+        gone = camera_removals()
+        if gone:
+            add(False, "benches removed by the central camera list",
+                f"{', '.join(gone['benches'])} — removed on "
+                f"{str(gone.get('at', ''))[:16].replace('T', ' ')} UTC when the admin "
+                f"panel saved revision {gone.get('revision', '?')}.\n"
+                "            If that was not intended, add them back in saar-seva under "
+                "Admin -> TRC settings -> Cameras. Those benches are recording nothing.\n"
+                "            If it was intended: python3 -m repaircam.cli cameras "
+                "--clear-removed",
+                warn=True)
+        unmapped = [wc for wc, cam in cameras.items() if cam.odoo_workcenter_id is None]
+        add(not unmapped, "every bench has an Odoo work centre",
+            "" if not unmapped else
+            f"{', '.join(sorted(unmapped))} will never auto-record — no odoo_workcenter_id")
+
+        if not args.quick:
+            for work_center in sorted(cameras):
+                ok, message = build_backend(cameras[work_center]).check(timeout=args.timeout)
+                add(ok, f"camera {work_center} answers", message)
+
+    # -- saar-seva ----------------------------------------------------------
+    try:
+        saar = saarseva.load_config()
+    except ConfigError:
+        add(False, "saar-seva auto-trigger",
+            "Not set up (no saarseva.yaml). Technicians would have to start every "
+            "recording by hand.", warn=True)
+        return _print_preflight(checks)
+
+    if not saar.enabled:
+        add(False, "saar-seva auto-trigger", "disabled in saarseva.yaml", warn=True)
+
+    staging = "staging" in saar.base_url
+    add(not staging, "pointed at production", saar.base_url,
+        warn=staging)
+
+    # An allow-list here silently vetoes a bench added centrally.
+    if saar.work_centers:
+        vetoed = sorted(
+            wc for wc, cam in cameras.items()
+            if cam.odoo_workcenter_id is not None and wc not in set(saar.work_centers)
+        )
+        add(not vetoed, "work_centers is not blocking a bench",
+            "" if not vetoed else
+            f"{', '.join(vetoed)} will never auto-record. Empty work_centers in "
+            f"saarseva.yaml to allow every configured bench.")
+    else:
+        add(True, "work_centers is empty", "every configured bench may auto-record")
+
+    if not saar.link_base:
+        add(False, "link_base set",
+            "Not set — the links posted to Odoo would have no address.")
+    else:
+        # Set is not the same as correct. A link_base naming an address this
+        # box no longer has looks perfectly healthy and posts a dead link for
+        # every recording — which is what a network renumbering did once.
+        host = urlparse(saar.link_base).hostname or ""
+        mine = config.local_ipv4_addresses()
+        add(host in mine, "link_base points at this machine",
+            saar.link_base if host in mine else
+            f"{saar.link_base} — this box answers on "
+            f"{', '.join(sorted(a for a in mine if a[0].isdigit() and a != '0.0.0.0'))}.\n"
+            "            Every link posted to Odoo would be a dead end. Fix link_base "
+            "in repaircam/saarseva.yaml and restart the service.",
+            warn=True)
+
+    client = saarseva.SaarSevaClient(saar)
+    ids = sorted(c.odoo_workcenter_id for c in cameras.values() if c.odoo_workcenter_id)
+
+    try:
+        client.fetch_active(ids or None)
+        add(True, "saar-seva accepts the API key", saar.base_url)
+        reachable = True
+    except saarseva.SaarSevaError as exc:
+        hint = str(exc)
+        if "503" in hint:
+            hint += "\n            REPAIRCAM_API_KEY is not set on that server."
+        elif "401" in hint or "403" in hint:
+            hint += "\n            The token here and the one on the server differ."
+        add(False, "saar-seva accepts the API key", hint)
+        reachable = False
+
+    if reachable:
+        try:
+            client.post_heartbeat([])
+            add(True, "recording light reaches saar-seva")
+        except saarseva.SaarSevaError as exc:
+            add(False, "recording light reaches saar-seva", str(exc),
+                warn=getattr(exc, "status", None) == 404)
+
+        try:
+            payload = client.fetch_storage_config()
+            revision = int(payload.get("revision") or 0)
+            if not revision:
+                add(True, "retention policy",
+                    "set on this recorder — the admin panel is not driving it")
+            else:
+                storagesync.validate(payload)
+                add(True, "central retention policy", f"revision {revision}, accepted")
+        except saarseva.SaarSevaError as exc:
+            add(False, "central retention policy", str(exc),
+                warn=getattr(exc, "status", None) == 404)
+        except storagesync.StorageSyncError as exc:
+            add(False, "central retention policy",
+                f"REFUSED: {exc}\n            storage.yaml is untouched.")
+
+        try:
+            payload = client.fetch_camera_config()
+            revision = payload.get("revision")
+            count = len(payload.get("cameras") or [])
+            if not revision:
+                add(False, "central camera list",
+                    "Nothing saved in the admin panel yet, so cameras.yaml stays "
+                    "hand-edited. That is fine — but it is not the central list.",
+                    warn=True)
+            else:
+                add(True, "central camera list", f"revision {revision}, {count} camera(s)")
+        except saarseva.SaarSevaError as exc:
+            add(False, "central camera list", str(exc),
+                warn=getattr(exc, "status", None) == 404)
+
+    return _print_preflight(checks)
+
+
+def _print_preflight(checks: list[tuple[str, str, str]]) -> int:
+    failed = warned = 0
+    for marker, title, detail in checks:
+        print(f"  {marker} {title}")
+        for line in (detail or "").splitlines():
+            if line.strip():
+                print(f"            {line.strip()}")
+        failed += marker == BAD
+        warned += marker == WARN
+
+    print()
+    if failed:
+        print(f"  {BAD} {failed} thing(s) must be fixed before going live.")
+        return 1
+    if warned:
+        print(f"  {WARN} Ready, with {warned} thing(s) worth knowing about above.")
+        return 0
+    print(f"  {OK} Ready.")
+    return 0
+
+
+def cmd_storage(args: argparse.Namespace) -> int:
+    """How much room is left, what has a second copy, and what has not."""
+    catalogue = Catalogue()
+    cfg = storage.load_config()
+
+    if args.archive:
+        result = storage.archive_pending(catalogue, cfg, limit=args.limit)
+        marker = OK if result.ok else BAD
+        print(f"{marker} {result.summary()}")
+        for clip_id, reason in result.failed:
+            print(f"     clip {clip_id}: {reason}", file=sys.stderr)
+        if not result.ok:
+            return 1
+
+    if args.prune:
+        result = storage.prune(catalogue, cfg)
+        print(f"{OK} recorder: {result.summary()}")
+        expired = storage.prune_archive(catalogue, cfg)
+        print(f"{OK} archive:  {expired.summary()}")
+
+    info = storage.status(catalogue, cfg)
+    disk = info["disk"]
+    marker = {"ok": OK, "low": WARN, "full": BAD}.get(disk["state"], OK)
+    print(f"\n  {marker} disk      {disk['message']}")
+
+    if not cfg.archive_dir:
+        print(f"  {WARN} archive   NOT SET — this laptop holds the only copy of every clip")
+        print( "            Set archive_dir in repaircam/storage.yaml.")
+    elif info["archive_missing"]:
+        print(f"  {BAD} archive   {cfg.archive_dir} is not there — is the disk mounted?")
+    else:
+        print(f"  {OK} archive   {cfg.archive_dir}")
+
+    print(f"     clips     {info['archived']} with a second copy, "
+          f"{info['unarchived']} without, {info['kept']} marked keep")
+    if info["expired"]:
+        print(f"               {info['expired']} past their window — the footage is gone")
+    if info["unarchived"] and cfg.archive_dir:
+        print( "            Run:  python3 -m repaircam.cli storage --archive")
+
+    if cfg.archive_dir:
+        # Two windows, said separately, because they mean different things: one
+        # frees this laptop, the other ends the footage.
+        if cfg.delete_after_archive:
+            print(f"     recorder  keeps {cfg.keep_days_local} days, then deletes its copy "
+                  f"(the archive still has it)")
+        else:
+            print(f"     recorder  keeps everything — deleting is off")
+            print(f"               once on: {cfg.keep_days_local} days")
+
+        windows = ", ".join(
+            f"{source or 'by hand'} {days}d"
+            for source, days in sorted(cfg.keep_days_by_source.items())
+        )
+        windows = f"{windows}, everything else {cfg.keep_days}d" if windows else f"{cfg.keep_days}d"
+        if cfg.delete_from_archive:
+            print(f"     archive   {windows} — THEN THE FOOTAGE IS GONE")
+        else:
+            print(f"     archive   keeps everything for ever — nothing expires")
+            print(f"               once on: {windows}")
+
+    for source in info["window_conflicts"]:
+        print(f"  {WARN} windows   {source or 'clips started by hand'}: the archive window is "
+              f"shorter than the recorder's {cfg.keep_days_local} days")
+        print( "            The archive pass wins, so those clips go early. Check storage.yaml.")
     return 0
 
 
@@ -464,6 +754,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--sync", action="store_true",
         help="fetch the central camera list from saar-seva and apply it now",
     )
+    p.add_argument(
+        "--clear-removed", action="store_true",
+        help="confirm that benches deleted by the central list were meant to go",
+    )
     p.set_defaults(func=cmd_cameras)
 
     p = sub.add_parser("record", help="record a clip from one bench")
@@ -521,6 +815,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="seconds to wait for a camera to answer (default: %(default)s)",
     )
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("preflight", help="is this box ready for the shop to rely on?")
+    p.add_argument("--quick", action="store_true", help="skip the camera network tests")
+    p.add_argument(
+        "--timeout", type=float, default=ffmpeg.DEFAULT_CHECK_TIMEOUT,
+        help="seconds to wait for a camera to answer (default: %(default)s)",
+    )
+    p.set_defaults(func=cmd_preflight)
+
+    p = sub.add_parser("storage", help="disk space, archive copies and clean-up")
+    p.add_argument("--archive", action="store_true",
+                   help="copy clips that have no second copy yet")
+    p.add_argument("--prune", action="store_true",
+                   help="delete local clips that are old AND verified at the archive")
+    p.add_argument("--accept-retention", action="store_true",
+                   help="agree to a shortened retention window, and let that footage go")
+    p.add_argument("--limit", type=int, default=20,
+                   help="how many clips to archive in one run (default: %(default)s)")
+    p.set_defaults(func=cmd_storage)
 
     p = sub.add_parser("web", help="start the web UI")
     p.add_argument("--host", default="0.0.0.0", help="default 0.0.0.0 (whole shop LAN)")

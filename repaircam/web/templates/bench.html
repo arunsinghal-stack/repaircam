@@ -15,6 +15,9 @@
         <span class="timer-inline" data-field="elapsed">{{ status.elapsed_hms }}</span>
       </div>
     </div>
+    {% if disk and disk.state != 'ok' %}
+    <p class="{{ 'err' if disk.state == 'full' else 'warn-text' }} small">{{ disk.message }}</p>
+    {% endif %}
     <p class="warn-text small" id="camera-warning" {{ '' if status.camera_slow else 'hidden' }}>
       The camera has not sent any video yet. Check it is powered and plugged in —
       nothing is being recorded until the light turns red.

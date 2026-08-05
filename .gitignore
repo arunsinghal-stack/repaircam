@@ -4,6 +4,13 @@ cameras.yaml
 repaircam/saarseva.yaml
 saarseva.yaml
 
+# Not a secret, but it names THIS box's archive disk. Committing one machine's
+# mount path would hand every other machine an archive_dir that does not exist
+# there — and an archive that is not there is one that quietly stops protecting
+# anything.
+repaircam/storage.yaml
+storage.yaml
+
 # Recordings / database (they live in ~/repaircam-data by default, but never
 # commit them even if someone points REPAIRCAM_DATA_DIR at the repo).
 repaircam-data/

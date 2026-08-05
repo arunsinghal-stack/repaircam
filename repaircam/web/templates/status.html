@@ -18,11 +18,132 @@
   <dt>Data directory</dt><dd><code>{{ data_dir }}</code></dd>
   {% if disk %}
   <dt>Disk</dt>
-  <dd class="{{ 'warn-text' if disk.free_gb < 20 else '' }}">
-    {{ disk.free_gb }} GB free of {{ disk.total_gb }} GB ({{ disk.used_percent }}% used)
-    — room for roughly {{ disk.bench_hours }} more bench-hours
+  <dd class="{{ 'err' if disk.state == 'full' else ('warn-text' if disk.state == 'low' else '') }}">
+    {{ disk.message }}
+    <div class="muted small">
+      {{ disk.free_gb }} GB free of {{ disk.total_gb }} GB ({{ disk.used_percent }}% used)
+    </div>
   </dd>
   {% endif %}
+
+  {% if store %}
+  <dt>Second copy</dt>
+  <dd>
+    {% if store.config.archive_dir == 'not set' %}
+      <span class="warn-text">Not set up &mdash; this machine holds the only copy of every clip.</span>
+      <div class="muted small">
+        A stolen or dropped laptop loses all of it. Set <code>archive_dir</code> in
+        <code>repaircam/storage.yaml</code> to a second disk or a NAS folder.
+      </div>
+    {% elif store.archive_missing %}
+      <span class="err">{{ store.config.archive_dir }} is not there &mdash; is the disk mounted?</span>
+      <div class="muted small">
+        Nothing is being copied, and nothing will be deleted while this is true.
+      </div>
+    {% else %}
+      <code>{{ store.config.archive_dir }}</code>
+      <div class="muted small">
+        {{ store.kept }} marked <b>keep</b> (never deleted, here or at the archive).<br>
+        {{ store.archived }} clip{{ '' if store.archived == 1 else 's' }} copied,
+        <span class="{{ 'warn-text' if store.unarchived else '' }}">{{ store.unarchived }}
+        still only here</span>.
+      </div>
+    {% endif %}
+    {% if store.last_error %}
+      {# Dated, because it is up to ten minutes old while everything above it
+         was measured just now. An undated stale error sitting under a live
+         green line makes the page contradict itself. #}
+      <div class="{{ 'muted' if store.archive_ready else 'err' }} small">
+        {{ store.last_error }}
+        {% if store.seconds_since_run is not none %}
+          &mdash; at the last check, {{ store.seconds_since_run }}s ago
+        {% endif %}
+        {% if store.archive_ready %}
+          <div class="muted small">The archive is reachable again now
+          {%- if store.next_run_in %}; the next pass, in about
+            {{ (store.next_run_in / 60)|round|int }} min, will clear this{% endif -%}.
+          To do it now: <code>python3 -m repaircam.cli storage --archive</code></div>
+        {% endif %}
+      </div>
+    {% elif store.seconds_since_run is not none %}
+      <div class="muted small">Last checked {{ store.seconds_since_run }}s ago{% if store.last_summary %} &mdash; {{ store.last_summary }}{% endif %}</div>
+    {% endif %}
+    {% if store.config_error %}
+      {# The file says one thing and the worker is doing another. Everything
+         else on this page describes the settings in USE, so without this the
+         page would look like a flat contradiction of the file. #}
+      <div class="err small">
+        <b>{{ store.config_path }} was not reloaded</b> &mdash; {{ store.config_error }}
+        <div class="muted small">The settings shown below are the ones still in use.
+        Fix the file and they will be picked up within ten minutes.</div>
+      </div>
+    {% endif %}
+  </dd>
+
+  {# The two windows are shown apart because they are not the same promise. One
+     frees this laptop and loses nothing; the other ends the footage. #}
+  {% if store.config.archive_dir != 'not set' %}
+  <dt>How long footage lasts</dt>
+  <dd>
+    <div class="muted small">
+      <b>On this recorder:</b>
+      {% if store.config.delete_after_archive %}
+        {{ store.config.keep_days_local }} days, then the local copy goes and the archive's
+        remains &mdash; old links still play.
+      {% else %}
+        for ever &mdash; <code>delete_after_archive</code> is off, so this disk fills up.
+      {% endif %}
+    </div>
+    <div class="muted small">
+      <b>In the archive:</b>
+      {% if store.config.delete_from_archive %}
+        {% for source, days in store.config.keep_days_by_source.items() %}{{ source }}
+          {{ days }} days{% if not loop.last %}, {% endif %}{% endfor %}{% if store.config.keep_days_by_source %},
+        everything else{% endif %} {{ store.config.keep_days }} days &mdash;
+        <b>then the footage is gone for good.</b>
+      {% else %}
+        for ever &mdash; <code>delete_from_archive</code> is off, so nothing ever expires and
+        the archive only grows.
+      {% endif %}
+    </div>
+    {% if store.retention_hold %}
+      {# The one change here that destroys footage. It is held, not applied,
+         and this is where the shop finds out it is waiting. #}
+      <div class="err small">
+        <b>A retention window was shortened and is NOT in force.</b>
+        {% for change in store.retention_hold.changes %}
+          {{ change.source or 'Clips started by hand' }}:
+          {{ change.from }} &rarr; {{ change.to }} days{% if not loop.last %};{% endif %}
+        {% endfor %}
+        <div>Applying it would delete
+          <b>{{ store.retention_hold.clips }} clip{{ '' if store.retention_hold.clips == 1 else 's' }}</b>
+          ({{ (store.retention_hold.bytes / 1073741824)|round(1) }} GB)
+          {%- if store.retention_hold.oldest %}, back to
+          {{ store.retention_hold.oldest[:10] }}{% endif %}.
+          <b>Nothing has been deleted.</b>
+        </div>
+        <div class="muted small">
+          The archive pass is stopped until this is answered. Put the window back in
+          <code>storage.yaml</code>, or accept it with
+          <code>python3 -m repaircam.cli storage --accept-retention</code>.
+        </div>
+      </div>
+    {% endif %}
+    {% if store.expired %}
+      <div class="muted small">{{ store.expired }} clip{{ '' if store.expired == 1 else 's' }}
+      past the window &mdash; the footage no longer exists.</div>
+    {% endif %}
+    {% for source in store.window_conflicts %}
+      <div class="err small">
+        <b>{{ source or 'Clips started by hand' }}:</b> the archive window is shorter than the
+        recorder's {{ store.config.keep_days_local }} days, so those clips are deleted early.
+        Check <code>storage.yaml</code>.
+      </div>
+    {% endfor %}
+  </dd>
+  {% endif %}
+  {% endif %}
+
   <dt>Recorded</dt>
   <dd>{{ stats.clips }} clips &middot; {{ stats.hours }} hours &middot; {{ stats.gigabytes }} GB</dd>
 </dl>
@@ -84,6 +205,47 @@
           before changing {{ 'it' if trigger.config_sync_waiting|length == 1 else 'them' }}.
         </div>
       {% endif %}
+      {% if trigger.config_removed %}
+        {# A shrinking shop looks exactly like a small one. Keep saying it. #}
+        <div class="err small">
+          <b>{{ trigger.config_removed.benches|join(', ') }}</b>
+          {{ 'was' if trigger.config_removed.benches|length == 1 else 'were' }} REMOVED by
+          the central list on
+          {{ trigger.config_removed.at.replace('T', ' ')[:16] }} UTC (revision
+          {{ trigger.config_removed.revision }}).
+          {{ 'That bench is' if trigger.config_removed.benches|length == 1 else 'Those benches are' }}
+          recording nothing.
+          <div class="muted small">
+            If that was not intended, add them back in saar-seva under
+            Admin &rarr; TRC settings &rarr; Cameras. If it was, run
+            <code>python3 -m repaircam.cli cameras --clear-removed</code>.
+          </div>
+        </div>
+      {% endif %}
+    </dd>
+    <dt>Retention policy</dt>
+    <dd>
+      {% if trigger.storage_sync_error %}
+        <span class="err">not applied &mdash; {{ trigger.storage_sync_error }}</span>
+        <div class="muted small">The windows in use are the ones in
+        <code>storage.yaml</code>; nothing central has overridden them.</div>
+      {% elif trigger.storage_revision_applied is none %}
+        <span class="muted">set on this recorder &mdash; the admin panel is not driving it</span>
+      {% else %}
+        revision {{ trigger.storage_revision_applied }} from the admin panel
+        {%- if trigger.storage_revision_seen is not none
+               and trigger.storage_revision_seen != trigger.storage_revision_applied %}
+          <span class="warn-text">&mdash; revision {{ trigger.storage_revision_seen }} is waiting</span>
+        {%- endif %}
+        {%- if trigger.storage_sync_summary %}
+          <div class="muted small">{{ trigger.storage_sync_summary }}</div>
+        {%- endif %}
+      {% endif %}
+      <div class="muted small">
+        Only how long footage is kept. Where the archive is, how many days this
+        laptop holds, and whether anything is deleted stay on this recorder and
+        cannot be set centrally.
+      </div>
     </dd>
     {% if trigger.owned %}
     <dt>Auto-recording</dt>

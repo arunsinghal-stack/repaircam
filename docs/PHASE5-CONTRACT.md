@@ -275,7 +275,7 @@ it. So RepairCam tells it, on the poll it already makes.
 ### Shape
 
 ```json
-{ "recorder": "http://192.168.1.163:8080",
+{ "recorder": "http://192.168.0.165:8080",
   "benches": [ {"workcenter_id": 2, "work_center": "WC2",
                 "state": "recording", "message": ""} ] }
 ```

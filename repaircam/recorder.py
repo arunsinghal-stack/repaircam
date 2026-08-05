@@ -23,7 +23,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from . import SCHEMA_VERSION, config, ffmpeg
+from . import SCHEMA_VERSION, config, ffmpeg, storage
 from .backends import CaptureBackend, CaptureError, Segment, build_backend
 from .catalogue import Catalogue, JobLabels, Recording, utcnow, write_sidecar
 
@@ -198,6 +198,21 @@ class Recorder:
                 raise RecorderError(f"{self.work_center} is already recording.")
             if state is State.FINALISING:
                 raise RecorderError(f"{self.work_center} is still saving the last clip.")
+
+            # Checked here rather than during: a clip that dies half-written is
+            # worse than one that was never begun, because nobody notices the
+            # first until they go looking for footage that does not exist.
+            # Resuming an operation is allowed through — its earlier segments
+            # are already on the disk and abandoning them helps nobody.
+            if state is State.IDLE:
+                try:
+                    storage.check_before_recording()
+                except storage.DiskFull as exc:
+                    self._last_error = str(exc)
+                    self.catalogue.log_event(
+                        "error", work_center=self.work_center, detail=f"disk full: {exc}"
+                    )
+                    raise RecorderError(str(exc)) from exc
 
             if state is State.IDLE or self._session is None:
                 session = Session(self.work_center, labels or JobLabels())

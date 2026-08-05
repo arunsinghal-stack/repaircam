@@ -59,6 +59,46 @@ def database_path() -> Path:
     return data_dir() / "repaircam.db"
 
 
+def local_ipv4_addresses() -> set[str]:
+    """Every IPv4 address this machine currently answers on.
+
+    Used to check that the address RepairCam puts into Odoo links is one a
+    browser can actually reach here. The shop's network was renumbered once
+    with nobody noticing, and every link posted afterwards pointed at an
+    address this box no longer had — a dead link for each recording, and
+    nothing anywhere saying so.
+
+    Two sources, because neither is complete on its own: the address the
+    kernel would use to reach the outside world (which is the one a tablet on
+    the shop LAN sees), and whatever the hostname resolves to. Both are
+    best-effort; a machine with no network at all returns just loopback.
+    """
+    import socket
+
+    found = {"127.0.0.1", "localhost", "0.0.0.0"}
+
+    # A connected UDP socket sends nothing — it only makes the kernel pick a
+    # route, which is exactly the question being asked.
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        found.add(sock.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        sock.close()
+
+    try:
+        hostname = socket.gethostname()
+        found.add(hostname)
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            found.add(info[4][0])
+    except OSError:
+        pass
+
+    return found
+
+
 # --------------------------------------------------------------------------
 # Cameras
 # --------------------------------------------------------------------------

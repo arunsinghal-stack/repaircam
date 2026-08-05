@@ -376,7 +376,14 @@ if it ever is, it reads `capturing`, not the button.
 
 ## 12. Open items
 
-- **Retention/archive job.** Nothing deletes or moves old clips yet; the SSD will fill.
+- **Off-box sync has no destination yet — deferred by the owner, 2026-07-29**, who has no
+  spare disk. `archive_dir` is empty, so every clip exists on exactly one laptop: a theft,
+  a drop or a dead drive loses all of it. The machinery is built and tested; it needs a
+  disk and one line of config, nothing more.
+  Note the consequence of the guard that ships with it: at ~1.8 GB per bench-hour, the
+  recorder refuses **Start** once free space falls under `min_free_gb`. With nothing being
+  archived away, that is the point at which recording stops for good rather than
+  temporarily.
 - **Phase 5 has never run for real.** Both halves are built and saar-seva's are merged
   to its `staging`, but no clip has yet been triggered by a technician's timer.
 - **Rebuild-from-sidecars command** — the design says the database can be rebuilt from

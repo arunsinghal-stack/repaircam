@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -44,6 +45,29 @@ def redact(command: list[str]) -> list[str]:
                 token = f"{scheme}://{credentials}@{tail}"
         cleaned.append(token)
     return cleaned
+
+
+#: Any ``scheme://credentials@host`` inside free text. Deliberately greedy up
+#: to the LAST ``@`` before the path, matching what redact() does with
+#: rpartition: a password may itself contain an ``@``, and a pattern that stops
+#: at the first one leaves the rest of it on screen.
+_CREDENTIALS_IN_TEXT = re.compile(r"(\w+://)([^\s/]+)@")
+
+
+def redact_text(text: str) -> str:
+    """Mask passwords in anything ffmpeg said.
+
+    ``redact()`` handles a command we built. This handles output we did not:
+    ffmpeg quotes the stream URL in almost every error it produces, so
+    "No route to host" arrives with the camera's password attached. That text
+    then travels to the terminal, the status page, the catalogue and the log.
+    """
+    def mask(match: "re.Match[str]") -> str:
+        credentials = match.group(2)
+        user, sep, _ = credentials.partition(":")
+        return f"{match.group(1)}{user}{':******' if sep else ''}@"
+
+    return _CREDENTIALS_IN_TEXT.sub(mask, text or "")
 
 
 def require_ffmpeg() -> None:
@@ -85,7 +109,7 @@ def run(command: list[str], *, timeout: float = 60) -> subprocess.CompletedProce
         raise FFmpegError(f"could not run ffmpeg: {exc}") from exc
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-6:]
-        raise FFmpegError("ffmpeg failed:\n" + "\n".join(tail))
+        raise FFmpegError(redact_text("ffmpeg failed:\n" + "\n".join(tail)))
     return proc
 
 
@@ -354,7 +378,7 @@ def reachable(url: str, *, timeout: float = DEFAULT_CHECK_TIMEOUT) -> tuple[bool
             return False, "the camera rejected the password in cameras.yaml"
         if "connection refused" in lowered:
             return False, "the camera refused the connection — is RTSP enabled, and the port right?"
-        return False, message.splitlines()[-1] if message else "stream did not open"
+        return False, redact_text(message.splitlines()[-1]) if message else "stream did not open"
     size = ""
     if summary.get("width") and summary.get("height"):
         size = f" {summary['width']}x{summary['height']}"
@@ -411,13 +435,14 @@ class RecordingProcess:
 
     @property
     def stderr(self) -> str:
+        """Already redacted. It reaches Segment.error, the catalogue and the UI."""
         return self._stderr
 
     def wait(self, timeout: float | None = None) -> int:
         """Wait for ffmpeg to exit on its own (used by ``--duration``)."""
         try:
             _, err = self._proc.communicate(timeout=timeout)
-            self._stderr = err or ""
+            self._stderr = redact_text(err or "")
         except subprocess.TimeoutExpired:
             raise
         return self._proc.returncode
@@ -436,7 +461,7 @@ class RecordingProcess:
 
         try:
             _, err = self._proc.communicate(timeout=timeout)
-            self._stderr = err or ""
+            self._stderr = redact_text(err or "")
             return self._proc.returncode
         except subprocess.TimeoutExpired:
             log.warning("ffmpeg ignored 'q' for %s, terminating", self.dest.name)
@@ -444,10 +469,10 @@ class RecordingProcess:
         self._proc.terminate()
         try:
             _, err = self._proc.communicate(timeout=5)
-            self._stderr = err or ""
+            self._stderr = redact_text(err or "")
         except subprocess.TimeoutExpired:
             log.error("ffmpeg would not terminate for %s, killing", self.dest.name)
             self._proc.kill()
             _, err = self._proc.communicate()
-            self._stderr = err or ""
+            self._stderr = redact_text(err or "")
         return self._proc.returncode

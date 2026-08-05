@@ -169,6 +169,18 @@ asserting the note lands on the OUT and never on the PICK.
 
 ---
 
+### The e-way bill is NOT one of them
+
+**Answered 2026-08-01: the courier generates it, and it does not go in the box.**
+So `courier_eway_number` stays out of `packing_ready()` — deliberately, and
+recorded here because it is exactly the kind of field a later reader would add
+to the list for symmetry, and thereby make every order unfilmable until a
+courier got round to something SAAR does not control.
+
+That is the general shape of the risk in this gate: each condition added blocks
+recording until it is satisfied, so a wrong one does not produce a bad clip, it
+produces silence. The four are the four.
+
 ## Open questions
 
 1. **How many packing stations?** The plan assumes one, named in `cameras.yaml`.
@@ -193,3 +205,174 @@ Recommended order:
 1. The three bench checks (focus, a real 20s clip, a real pause-and-resume) — 30 minutes.
 2. Phase 5 switched on and proven with one real repair.
 3. This.
+
+---
+
+# Correction: we have been filming the wrong stage
+
+**Raised 2026-08-01 by the owner. BUILT the same day** — saar-seva branch
+`claude/packing-video-document-gate`, not merged, never run against a real
+database. RepairCam itself needed no change.
+
+The plan above puts Record on the packer's screen while the job is `packing`.
+That is the wrong moment. The physical boxing — invoice in the box, AWB on the
+outside, box sealed — happens **after logistics has punched the shipment and
+requested the invoice.** What the current button films is serial verification,
+which is not what anyone will want to look at when a customer says the box was
+short an item.
+
+## What the workflow actually is
+
+| # | Who | What | `PackingJob` |
+|---|---|---|---|
+| 1 | packer | Start packing | `packing` |
+| 2 | packer | serials into boxes, labels printed, complete | `packed` |
+| 3 | **dispatcher** | courier cost + COD per shipment, **request invoice** | `invoice_requested_at` set |
+| 4 | accounts | posts the invoice | invoice number exists |
+| 5 | **packer or dispatcher** | **the actual boxing** | still `packed` |
+| 6 | dispatcher | AWB, dispatch complete | `dispatched` |
+
+**Step 5 is what needs filming.** Steps 1–2 do not.
+
+## The part that makes this more than a one-line change
+
+At step 5 **there is no screen with a Record button on it.**
+
+- The packer's queue (`GET /packer/jobs`) filters `status IN ('ready','packing')`.
+  The job vanished from the packer's screen at step 2.
+- The Dispatch screen does list `packed` jobs — but it is a different role and
+  has never had a camera panel.
+
+So the gate cannot simply be moved; something has to *show* the job during the
+window we want filmed.
+
+## The window — documents, not a status
+
+**Corrected again, 2026-08-01.** "Invoice requested" is not the gate either.
+Requesting an invoice is asking accounts for one; the box cannot be packed until
+the paperwork physically exists, because the paperwork goes *in and on the box*:
+
+> AWB number, invoice number, the invoice document itself, and the box label.
+
+All four are produced at the logistics stage, and the order matters — the
+dispatcher requests the invoice *in order to get a number with which to
+generate the AWB*. So `invoice_requested_at` is the beginning of that stretch,
+not the end of it. Gating on it would have re-opened Record too early, just
+less early than before.
+
+| Document | Where it lives | Ready when |
+|---|---|---|
+| **AWB number** | `Shipment.awb_number` | set on every shipment — **except** `is_self_pickup`, where the customer collects and there is no courier at all |
+| **Invoice number** | `PackingJob.odoo_invoice_name` / `odoo_invoice_move_id` | accounts has POSTED it. `invoice_requested_at` only means somebody asked |
+| **Invoice document** | fetched from Odoo by move id (`get_invoice_pdf_b64`) | no separate field: **the number existing is the document existing** |
+| **Label** | `PackingBox.label_printed_at` | printed on every box |
+
+Start is allowed when all of those hold and the job is still `packed`. After
+`dispatched` the box has left the building.
+
+**Stop stays ungated**, as it already is. A job that reaches `dispatched` while
+the camera is running must still be stoppable, or that bench films for ever.
+
+### One definition, in one place
+
+The button's rule and the screen's rule must be the same rule. Write it once:
+
+```python
+def packing_ready(db, job) -> tuple[bool, list[str]]:
+    """Can the box actually be packed yet, and if not, what is missing?"""
+```
+
+used by three callers that would otherwise each grow their own copy:
+
+1. `packer_record_start` — refuses, **naming the missing document**;
+2. the packer and dispatch queue payloads — so the row can say *"waiting for:
+   AWB"* rather than showing a dead button;
+3. the panel's enabled state.
+
+Two hand-written copies of a four-part condition will drift, and the drift is
+invisible: the button works, the label lies, or the reverse. This project has
+already paid for that twice — `link_base` reported as set when it pointed
+nowhere, and a bench count reported healthy while two benches were gone.
+
+**A refusal must name the missing document.** "You can't record yet" sends
+somebody to find a manager. "Waiting for the AWB on shipment 2" sends them to
+the dispatcher.
+
+### Self-pickup is not a missing AWB
+
+`is_self_pickup` means the customer collects at the counter: no courier, no AWB,
+by design. Treating a blank AWB there as "not ready" would make self-pickup
+orders permanently unfilmable, and nobody would connect the two. The dispatch
+gate already draws this distinction; the recording gate must draw the same one.
+
+## Who presses it
+
+**Either the packer or the dispatcher — decided 2026-08-01, it varies by day.**
+So both screens carry the panel and both roles may record:
+
+- the record endpoints accept packer **or** dispatcher, the way
+  `save_bench_workcenters` already accepts technician **or** packer;
+- **dispatchers must therefore be mappable to a work centre** in Admin → TRC
+  settings → People, exactly as packers became mappable in saar-seva PR #473.
+  An unmapped dispatcher pressing Record gets the same "no bench" refusal a
+  packer does, and that refusal has to name the fix.
+
+The "one camera cannot film two jobs" guard already exists, and now earns its
+keep for a second reason: two *people* can reach for the same bench.
+
+## What has to change
+
+**saar-seva backend**
+1. `packing_ready()` — the one definition above — plus
+   `packer_record_start` replacing its `status != "packing"` refusal with it,
+   quoting whichever documents are missing. Add a refusal for `dispatched`.
+2. Both record endpoints and the recordings/camera-light endpoint: accept
+   packer **or** dispatcher.
+3. `GET /packer/jobs`: also return jobs that are `packed` and not yet
+   dispatched, under a clearly separate heading, each carrying its
+   `packing_ready` verdict. A packer who sees a job they already completed
+   sitting back in their queue with no explanation will reasonably think
+   something went wrong — and one that is waiting on a document needs to say
+   which, or it looks broken rather than pending.
+4. People mapping: include dispatchers.
+
+**saar-seva frontend** — one component, mounted twice.
+
+5. `Packing.jsx`, on the job detail (`/warehouse/packing/<job>`): same place the
+   panel already sits, different moment. It no longer appears during `packing`.
+   The job returns to the packer's queue under its own heading — *"Ready to box"*
+   — so it is clear this is a later stage and not a job that came back broken.
+6. `Dispatch.jsx`, on the order detail: **directly below the "Invoice for AWB"
+   card**, which is where the AWB and invoice are actually finished. Somebody
+   who has just completed the paperwork should find the Record button in their
+   eyeline, not on another screen.
+
+Not ready yet is shown, never hidden: *"Waiting for: AWB on shipment 2,
+invoice"*, from the server's own verdict. A button that silently is not there
+is indistinguishable from a feature that is broken.
+
+**A fourth copy already exists, which is the argument for one definition.**
+`Dispatch.jsx` computes `allComplete` — courier, AWB, weight, expected date per
+shipment — duplicating the backend's dispatch gate in JavaScript. Adding a
+fifth, hand-written, for recording readiness is how the button and the label
+end up disagreeing. `packing_ready()` is computed server-side and sent.
+
+**RepairCam** — nothing. The recorder polls `/pack/active`, which is driven by
+`PackingRecording` rows, not by job status. The clip's `source` stays
+`packing`, so the 45-day archive window still applies. The link still goes to
+the **outgoing** Delivery Order's chatter.
+
+## What this costs if we get it wrong
+
+Filming step 1–2 instead of step 5 produces clips that look like evidence and
+answer no dispute anybody actually raises. Filming nothing at all — which is
+what happens if the gate moves without step 3 — is at least honest, and the
+status page would say so. **Of the two, do not ship the gate change without the
+queue change.**
+
+## Sequencing
+
+Backend gate + roles + queue first (it is testable on staging with no camera),
+then the two screens, then the People mapping. Nothing here touches recording
+that already works: repair benches are unaffected, and packing video has never
+run in the shop, so there is no in-flight behaviour to preserve.

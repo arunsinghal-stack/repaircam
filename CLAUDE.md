@@ -36,13 +36,26 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 
 ## Hardware (POC — frozen)
 - Recorder: existing **Linux i3 laptop** (8 GB RAM OK). POC uses a **single PoE injector** (no switch).
-  On the shop LAN at **192.168.1.163**; the web UI is `http://192.168.1.163:8080`, installed as
-  the `repaircam` systemd service (starts on boot). That URL is also what `link_base` must be
-  set to in `saarseva.yaml` when Phase 5 is switched on — the links posted to Odoo point at it.
+- **ADDRESSES MOVE — do not trust any address written here.** The shop network was renumbered
+  from `192.168.1.x` to `192.168.0.x` on 2026-08-01 with nobody touching RepairCam, and every
+  address in this file was wrong within a morning. Ask the box, do not read it:
+  `ip -4 addr` for the recorder, `cli cameras` for the cameras, and
+  `for i in $(seq 1 254); do ( timeout 1 bash -c "</dev/tcp/192.168.0.$i/554" 2>/dev/null && echo 192.168.0.$i ) & done; wait`
+  to find every camera on the LAN regardless of what is configured.
+  **The fix is DHCP reservations on the router** for the cameras and the recorder; until
+  that is done this will happen again.
+- As of 2026-08-01: recorder on Wi-Fi at **192.168.0.165** (`http://192.168.0.165:8080`),
+  installed as the `repaircam` systemd service (starts on boot). That URL is also what
+  `link_base` must be in `saarseva.yaml` — `cli preflight` now checks link_base against the
+  addresses this box really answers on, because a renumbering silently turned every link
+  posted to the Odoo chatter into a dead end.
 - Camera CHOSEN: **TP-Link VIGI C540V** (4MP, 3× optical zoom + autofocus, ONVIF/RTSP, PoE).
-  Live on the shop LAN at **192.168.1.184** (the shop is a `192.168.1.x` network; older notes
-  saying `192.168.0.133` are stale — test fixtures still use that as a dummy, which is fine).
-  Working RTSP: `rtsp://admin:<pass>@192.168.1.184:554/stream1` (main) / `/stream2` (sub).
+  **ONE camera exists in the shop** (verified by port-554 scan, 2026-08-01), at
+  `192.168.0.132`, **physically over the PACKING TABLE** and correctly mapped to the
+  Packing Station, Odoo work centre 13. There is no camera on any repair bench, so repair
+  auto-recording has nothing to film. Bench codes like `WC13` are RepairCam's own labels
+  derived from the Odoo work-centre id — `WC13` does NOT mean "bench 1" or "bench 13".
+  Working RTSP: `rtsp://admin:<pass>@192.168.0.132:554/stream1` (main) / `/stream2` (sub).
   Bench cam bitrate capped at 4096 kbps in the VIGI app; audio is `pcm_alaw` → must transcode to AAC for MP4.
 - Buying rule: **motorized varifocal only** (a lens focal RANGE like 2.8–12mm). A single mm number = fixed = reject.
 
@@ -96,6 +109,15 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Trap:** `work_centers` in `saarseva.yaml` is an allow-list. Leave it **empty**, or a
   bench added centrally is fully configured and still never records. The status page calls
   this out under "Not auto-recording".
+- **Trap (cost the shop 2 of its 3 benches on 2026-08-01):** the central list is
+  authoritative, so a bench MISSING from it is **deleted** from `cameras.yaml` on the next
+  sync. One bench then looks exactly as healthy as three. Now recorded durably
+  (`camera_config_removed` in the catalogue) and reported by `preflight` and the status
+  page until `cli cameras --clear-removed`.
+- **`link_base` being set is not the same as it being right.** It must name an address
+  THIS box answers on; `preflight` now checks it against the machine's own addresses,
+  because a network renumbering made every link posted to Odoo a dead end and every
+  check still said OK.
 
 ## Central camera config (BUILT, both halves merged; not yet used in the shop)
 - Camera list lives in Admin → TRC settings → "Cameras ↔ work centres" (`trc.manage`).
@@ -108,7 +130,11 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   `ipaddress.is_private`, which also accepts loopback, link-local and the RFC 5737
   documentation ranges — `203.0.113.5` would have passed for a shop camera.
 
-## Packing video (BOTH halves built, not yet run for real)
+## Packing video (built end to end; never yet run in the shop)
+- **"Both halves built" was the wrong phrase and it hid a gap for a day.** It meant
+  RepairCam and saar-seva's *backend*. The packer's screen had no Record button at all —
+  `Packing.jsx` did not mention recording. Built now (saar-seva PRs #475, #477). When
+  describing this feature, say which of the THREE parts is done: recorder, endpoints, UI.
 - Packer presses **Record/Stop** on a saar-seva packing job; each clip's link goes to the
   **outgoing** Delivery Order's chatter. Several clips per order is normal.
 - **The DO rule:** an order is one-step (a single `outgoing` picking) or two-step (`internal`
@@ -119,13 +145,137 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Packing benches are Odoo work centres**, same as repair benches — `cameras.yaml` needs no
   new field, and multiple packing stations work.
 - saar-seva side: `routers/repaircam_pack.py` (`GET /pack/active`, `POST /pack/recordings`)
-  + `PackingRecording` model + packer Record/Stop in `warehouse.py`, on branch
-  `claude/packing-video-endpoints`. RepairCam side: `saarseva.py` + `trigger.py`.
+  + `PackingRecording` model + packer Record/Stop in `warehouse.py` + the panel in
+  `pages/warehouse/Packing.jsx`. RepairCam side: `saarseva.py` + `trigger.py`.
+- **THE GATE WAS WRONG; FIXED 2026-08-01 (saar-seva branch `claude/packing-video-document-gate`, unmerged).** Record currently appears
+  while the job is `packing` — that films serial verification. The **actual boxing happens
+  the DOCUMENTS exist** — AWB (`Shipment.awb_number`, unless `is_self_pickup`), invoice
+  number (`PackingJob.odoo_invoice_move_id`, i.e. accounts POSTED it — `invoice_requested_at`
+  only means somebody asked), the invoice PDF (fetched from Odoo by move id, so the number
+  existing is the document existing), and the box label (`PackingBox.label_printed_at`).
+  They go in and on the box, so packing cannot happen before them. The job is `packed`
+  throughout. **The e-way bill is NOT on the list** — the courier generates it and it does
+  not go in the box; adding it "for symmetry" would make every order unfilmable pending
+  something SAAR does not control. At that moment the
+  job has already DROPPED OFF the packer's queue (`GET /packer/jobs` filters
+  `ready|packing`), so there is no screen with a Record button on it — the gate cannot just
+  be moved. Either role may film it (decided: varies by day), so both the Packing and
+  Dispatch screens get the panel and dispatchers become mappable to a work centre. The rule is `backend/app/packing_gate.py`
+  (`packing_ready`), computed ONCE and sent to both screens — the queue row, the panel and
+  the gate must not hold three copies of a four-part condition. `PackingVideoPanel.jsx` is
+  one component mounted on both screens. Full reasoning: the "Correction" section at the end
+  of docs/PACKING-VIDEO-PLAN.md.
+- **Stop is never gated** and the panel stays while a clip runs, whatever the status:
+  otherwise a packer who completes the order with the camera on cannot stop it and that
+  bench films for ever.
+- The camera light comes from the packer's OWN recordings endpoint, not `/trc/recorder-state`
+  — that one is technician-authenticated and **a packer is not a technician**. The same role
+  split made packing benches unmappable until saar-seva PR #473.
+- Setup is three things, all joined on the Odoo work-centre id: the station is a work centre;
+  the packer carries the **Packer** tag and is mapped in Admin -> TRC settings -> **People**
+  (not "Technicians" — it lists both now); a camera is mapped to the same work centre.
 - Catalogue schema v2: `recordings.source` / `source_ref` say which integration a clip came
   from, so link retries survive a restart.
 - Full plan: docs/PACKING-VIDEO-PLAN.md.
-- **Retention/archive:** nothing deletes or moves old clips. ~1.8 GB per bench-hour, so the
-  SSD will fill and recording will stop mid-repair. Next real build item.
+
+## Central storage config (ALL 6 PHASES BUILT, never run in the shop — docs/STORAGE-CONFIG-PLAN.md)
+- Retention windows from the admin panel, like the camera list. **Only the policy half.**
+  `archive_dir`, `keep_days_local` and both delete switches stay LOCAL, and a payload
+  containing them is rejected outright: a central mount path can silently turn a backup
+  into a folder on the boot disk, and a central `keep_days_local` rebuilds the
+  disk-vs-policy confusion the two-window split exists to end.
+- **Shortening a window deletes footage**, and only the recorder knows how much (the
+  catalogue is on the box). **BUILT (phase 4, ahead of the rest):** any reduction of an
+  ARCHIVE window — by hand today, by a sync later — is staged with its cost ("would delete
+  214 clips, 380 GB, back to 12 June"), `prune_archive` refuses to run until it is answered
+  (`cli storage --accept-retention`, or put the window back), and the baseline lives in the
+  catalogue so an edit made while the service was stopped is still caught. `keep_days_local`
+  is never staged — shortening it only removes copies that are verifiably archived.
+- ~~Blocker: `StorageWorker` read its config once at startup.~~ **BUILT:**
+  `reload_if_changed()` picks up an edited `storage.yaml` within one 10-min pass.
+- **BUILT both ends, not yet merged or used:** saar-seva `backend/app/storage_config.py`
+  + `GET /repaircam/storage-config` + `storage_revision` on both polls (branch
+  `claude/central-storage-config`); recorder `repaircam/storagesync.py` + `trigger.py`.
+  The two revisions are tracked APART — one number for both would re-read the camera list
+  whenever a retention window moved. Revision 0 = nobody saved a policy, so nothing is
+  applied. `storage.yaml` is rewritten in two labelled halves so it is obvious which edits
+  survive a sync.
+- The recorder also reports what it HOLDS, on the existing heartbeat (`storage.report()`
+  -> `storage_config.record_recorder_state`): free space, clip counts, oldest footage,
+  archive reachable, whether either delete switch is on, and any held reduction. Freshness
+  is decided server-side (120s), like the bench lights. The archive PATH is deliberately
+  never reported.
+- Phase 6 (the screen) is `StorageSection` in `AdminTrcSettings.jsx` — "How long footage
+  is kept". It shows each recorder's report beside the windows and says outright when a
+  recorder deletes nothing, because "packing 45 days" otherwise reads as a promise that
+  expires.
+- **NOT LIVE.** The saar-seva half sits on branch `claude/central-storage-config`,
+  unmerged and never run against a real database. Revision 0 = nothing applied anywhere.
+- **Retention/archive (Phase 3, BUILT — the lifecycle is closed):** `storage.py`.
+  Free-space guard refuses **Start** below `min_free_gb` (20 GB ≈ 11 bench-hours); a resume
+  is let through. Clips are copied to `archive_dir` and verified there.
+  **THERE ARE TWO RETENTION WINDOWS AND THEY ARE NOT THE SAME THING:**
+  - `keep_days_local` (default 7) = how long the **recorder** keeps its copy, with
+    `delete_after_archive: true`. This is **arithmetic, not policy** — 3 benches ≈ 43 GB/day,
+    so this 204 GB laptop holds ~5 days. Putting the shop's 30-day policy here fills the disk
+    by mid-week and the guard then refuses Start while nothing is old enough to prune.
+    Nothing is lost when it expires: the clip page falls back to the archive, so Odoo links
+    still play.
+  - `keep_days` + `keep_days_by_source` (**repair 30, packing 45**) = how long the
+    **archive** keeps it, with `delete_from_archive: true` (`prune_archive`). This is the
+    shop's policy and the point at which **the footage stops existing**. Two switches on
+    purpose: one frees the laptop, the other ends the record.
+  A clip marked `keep` is never deleted by either pass — enforced in the SQL, not the caller.
+  The archived file is re-checked for existence and size at the moment of local deletion,
+  and `prune_archive` refuses any path not under the archive configured *now*, refuses an
+  unmounted archive, and takes the local copy with it. The catalogue row **outlives its
+  footage** (`archive_deleted`, `archive_deleted_at`) so an old Odoo link says "passed its
+  retention window and has been deleted" rather than "missing from disk". A background
+  worker does all of it every 10 min; `cli storage [--archive] [--prune]` does it by hand.
+  Config: `repaircam/storage.yaml` (optional — the guard applies without it). **A change is
+  picked up within one 10-minute pass, no restart** (`StorageWorker.reload_if_changed`); a
+  file that will not parse is refused and the settings in use are kept, with the divergence
+  on the status page. Sizing: docs/STORAGE-PLAN.md — 22–43
+  GB/day at 3 benches, so the archive settles near 1.4 TB on a 30/45 policy.
+  Stage 7 (exporting `keep`-marked clips as a training set) still does not exist.
+
+## Going live (recorder cut over to PRODUCTION 2026-07-29; `preflight` all green)
+- `base_url` is `https://saar-seva-api.onrender.com`; production has both
+  `REPAIRCAM_API_KEY` and the code. Disk ~204 GB (~113 bench-hours).
+- **Three benches were configured on 2026-07-29 (WC1, WC2, WC13); by 2026-08-01 only the
+  packing camera remained.** The central list was saved with one camera in it, so the sync
+  deleted the other two — the design working as intended, but one bench then looks exactly
+  as healthy as three. A port-554 scan confirmed only one camera physically exists, so the
+  removal was correct and was acknowledged with `cli cameras --clear-removed`.
+- **Outstanding:** the camera password `Admin@321` was printed by a pre-flight run before
+  `redact_text()` existed, so it is in a terminal scrollback and a chat log — **rotate it.**
+  The power-cut behaviour has never been tested, and it must be before
+  `delete_after_archive` is switched on: archiving would faithfully copy a clip a power cut
+  had truncated. DHCP reservations are still not set on the router.
+- **Second copy is LIVE (2026-08-01).** 3.7 TB Seagate, NTFS (it holds 355 GB of the shop's
+  own tool files, so it was NOT reformatted), mounted by UUID from `/etc/fstab` at
+  `/mnt/backup-drive`, `archive_dir: /mnt/backup-drive/RepairCam`. **Both deletions off.**
+  Mounted **on demand** (`noauto,x-systemd.automount`): a plain fstab entry only mounts at
+  boot, so unplugging and replugging left the shop on one copy until somebody mounted it by
+  hand. **That change also broke the status page**, and the fix matters beyond this drive:
+  `Path.exists()` swallows ENOENT and RE-RAISES anything else, and an unplugged autofs mount
+  answers **ENODEV**. Always use `storage.reachable()` — never `Path.exists()` — for the
+  archive, or "is the archive there?" becomes a 500 at the one moment it is asked.
+  Notes: `archive_dir` is the SUBFOLDER, not the mount root — if the drive is unplugged the
+  empty mount point still exists but the subfolder does not, so RepairCam correctly sees the
+  archive as gone. NTFS after a power cut can mount read-only; the fix is
+  `sudo ntfsfix /dev/sdX2`. The drive dropped off the USB bus once during setup and came
+  back as a different device name (`sdb` -> `sdc`), which is why the fstab entry uses the
+  UUID; watch for that recurring before trusting it. `mount -a` will stack a second mount on
+  top of a dead one — unmount in a loop until `findmnt` is empty, then `mount /mnt/backup-drive`.
+- **docs/GO-LIVE.md** is the runbook. `cli preflight` checks the whole thing from the
+  recorder's side and says what to do about anything it finds — run it before believing
+  the shop is ready.
+- staging and production are **different databases**. The camera list and its passwords
+  entered on one do not exist on the other. Production needs its own `REPAIRCAM_API_KEY`
+  and `REPAIRCAM_CONFIG_KEY` on the `saar-seva-api` Render service.
+- Production already answers **503** on the RepairCam endpoints, which means the code is
+  deployed and only the key is missing. 401 would mean the key is set and ours is wrong.
 
 ## Conventions
 - `repaircam/cameras.yaml` holds camera IPs/passwords — **local only, gitignored.** Never commit it.
