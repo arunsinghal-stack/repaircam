@@ -168,6 +168,16 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
 - **Stop is never gated** and the panel stays while a clip runs, whatever the status:
   otherwise a packer who completes the order with the camera on cannot stop it and that
   bench films for ever.
+- **Complete packing and Dispatch all are REFUSED while a clip is open** (saar-seva branch
+  `claude/block-complete-while-recording`, unmerged). `dispatch_complete` never looked at
+  `PackingRecording` at all, so an order could move on with the camera still filming an
+  empty table; the panel's "this order has moved on" line was advisory only. Three things
+  the block has to keep: it refuses **before** the Odoo push (a refusal after the Delivery
+  Order is validated leaves Odoo Done with the job still `packed`), the abandoned-recording
+  sweep runs **first** (else a capture that died at lunchtime holds the order for six
+  hours), and **Stop stays ungated** — the Stop button is on the same screen that refused
+  them. A cross-order dispatch checks every covered job and names which order each running
+  camera belongs to.
 - The camera light comes from the packer's OWN recordings endpoint, not `/trc/recorder-state`
   — that one is technician-authenticated and **a packer is not a technician**. The same role
   split made packing benches unmappable until saar-seva PR #473.

@@ -320,6 +320,46 @@ So both screens carry the panel and both roles may record:
 The "one camera cannot film two jobs" guard already exists, and now earns its
 keep for a second reason: two *people* can reach for the same bench.
 
+## Closing the other end — Complete and Dispatch wait for Stop
+
+*(added 2026-08-05, saar-seva branch `claude/block-complete-while-recording`)*
+
+Filming is gated at the start. It was not gated at the end. `dispatch_complete`
+never read `PackingRecording` at all: it ran while the job was `packed` —
+exactly the state where filming is allowed — advanced the status to
+`dispatched`, and left the row `active`. The box left the building and the
+bench went on recording an empty table until the six-hour abandoned sweep
+noticed.
+
+The only thing in the way was a line on the panel — *"This order has moved on
+but the camera is still running"* — which is advice, printed on a screen the
+dispatcher has usually already left.
+
+Both **Complete packing** and **Dispatch all** now refuse while a clip is open,
+naming the bench. Three constraints, each of which is the whole point:
+
+1. **The refusal lands before the Odoo push.** Everything past that point
+   validates the Delivery Order. Refusing afterwards would leave the DO `done`
+   in Odoo with the job still `packed` — precisely the out-of-sync state the
+   admin force-validate button exists to recover from.
+2. **The abandoned-recording sweep runs first.** Otherwise a capture that died
+   at lunchtime holds the order in the dispatch queue for six hours, and the
+   block becomes a worse failure than the one it fixes.
+3. **Stop stays ungated,** and the Stop button is on the same screen that just
+   refused them. `packer_record_stop` has no status check and no bench-mapping
+   check, so whoever is blocked can always clear it. A block that cannot be
+   cleared by the person facing it is a shop that stops.
+
+A cross-order dispatch seals other orders' boxes into the same shipments, so
+every job in `covered_job_ids` is checked, and the refusal says which order
+each running camera belongs to — otherwise "a camera is running" sends somebody
+round the shop.
+
+The buttons grey out and **say why**: a disabled button wearing its usual label
+is indistinguishable from a broken one. The flag is the server's own `active`,
+forwarded by `PackingVideoPanel` rather than recomputed in the page, so the
+button and the refusal cannot drift apart.
+
 ## What has to change
 
 **saar-seva backend**
