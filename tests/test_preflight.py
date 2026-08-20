@@ -239,7 +239,14 @@ def test_a_link_base_naming_this_machine_passes(shop, monkeypatch, capsys):
         config, "local_ipv4_addresses", lambda: {"127.0.0.1", "192.168.1.163"}
     )
     assert run() == 0
-    assert "dead end" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "dead end" not in out
+    # And it must say OK, not WARN. The check carried warn=True unconditionally,
+    # so a link_base that was exactly right still printed WARN for ever — and a
+    # permanent warning against a healthy setting is one nobody reads the day it
+    # means something.
+    assert "OK   link_base points at this machine" in out
+    assert "WARN link_base points at this machine" not in out
 
 
 def test_a_link_base_by_hostname_is_accepted(shop, monkeypatch, capsys):

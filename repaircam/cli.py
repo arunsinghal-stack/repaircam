@@ -274,7 +274,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             f"{', '.join(sorted(a for a in mine if a[0].isdigit() and a != '0.0.0.0'))}.\n"
             "            Every link posted to Odoo would be a dead end. Fix link_base "
             "in repaircam/saarseva.yaml and restart the service.",
-            warn=True)
+            warn=host not in mine)
 
     client = saarseva.SaarSevaClient(saar)
     ids = sorted(c.odoo_workcenter_id for c in cameras.values() if c.odoo_workcenter_id)
