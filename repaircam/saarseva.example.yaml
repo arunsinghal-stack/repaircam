@@ -45,3 +45,12 @@ saarseva:
 
   # Set to false to keep the settings but stop polling.
   enabled: true
+
+  # Disputed clips. When a reseller disputes a parcel and somebody at SAAR
+  # approves sharing the opening or packing video, saar-seva asks this box
+  # (on its ordinary poll) to upload that one clip to Shopify, and the clip is
+  # marked "keep" here so retention never deletes it. Only approved, disputed
+  # clips ever leave the shop. Set to false and none ever will.
+  share_disputed_clips: true
+  # How long one upload may take over the shop's internet, in seconds.
+  upload_timeout_seconds: 900

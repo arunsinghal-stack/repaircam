@@ -15,9 +15,11 @@ saar-seva has REPAIRCAM_API_KEY set (without it those endpoints 503 everyone).
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,6 +36,9 @@ log = logging.getLogger(__name__)
 
 DEFAULT_POLL_SECONDS = 5.0
 DEFAULT_TIMEOUT = 10.0
+#: A clip upload goes over the shop's own internet, which is slow on the way
+#: UP; a 30 MB clip at 2 Mbit/s takes two minutes.
+DEFAULT_UPLOAD_TIMEOUT = 900.0
 
 
 class SaarSevaError(Exception):
@@ -71,6 +76,11 @@ class SaarSevaConfig:
     timeout_seconds: float = DEFAULT_TIMEOUT
     work_centers: list[str] = field(default_factory=list)
     enabled: bool = True
+    upload_timeout_seconds: float = DEFAULT_UPLOAD_TIMEOUT
+    #: Upload a disputed clip when SAAR approves sharing it with a reseller.
+    #: The shop's own switch: set false and no video ever leaves this box,
+    #: whatever saar-seva asks for.
+    share_disputed_clips: bool = True
 
     @property
     def safe_api_key(self) -> str:
@@ -85,6 +95,7 @@ class SaarSevaConfig:
             "work_centers": self.work_centers or "all configured benches",
             "api_key": self.safe_api_key,
             "enabled": self.enabled,
+            "share_disputed_clips": self.share_disputed_clips,
         }
 
 
@@ -136,6 +147,8 @@ def load_config(path: Path | None = None) -> SaarSevaConfig:
         timeout_seconds=float(values.get("timeout_seconds", DEFAULT_TIMEOUT)),
         work_centers=[str(c) for c in centers],
         enabled=bool(values.get("enabled", True)),
+        upload_timeout_seconds=float(values.get("upload_timeout_seconds", DEFAULT_UPLOAD_TIMEOUT)),
+        share_disputed_clips=bool(values.get("share_disputed_clips", True)),
     )
 
 
@@ -306,6 +319,94 @@ def parse_active_packing(payload: Any) -> list[ActiveOperation]:
     return operations
 
 
+@dataclass
+class ClipUpload:
+    """A disputed clip a person at SAAR has approved for sharing.
+
+    Rides the /pack/active poll as ``clip_uploads``. The only way the cloud
+    can ask this box for a file: saar-seva cannot call into the shop.
+    """
+
+    upload_id: str
+    recording_id: int
+    kind: str = ""
+
+
+def parse_clip_uploads(payload: Any) -> list[ClipUpload]:
+    """Read ``clip_uploads`` off a /pack/active answer. Rows missing an id
+    are skipped with a warning rather than failing the poll — the poll's
+    first job is starting and stopping recordings."""
+    if not isinstance(payload, dict):
+        return []
+    rows = payload.get("clip_uploads") or []
+    if not isinstance(rows, list):
+        return []
+    out: list[ClipUpload] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        upload_id = _text(row.get("upload_id"))
+        recording_id = _int(row.get("repaircam_recording_id"))
+        if not upload_id or recording_id is None:
+            log.warning("ignoring a clip upload with no id: %s", row)
+            continue
+        out.append(ClipUpload(upload_id=upload_id, recording_id=recording_id,
+                              kind=_text(row.get("kind"))))
+    return out
+
+
+class _MultipartFile:
+    """A multipart/form-data body read in blocks, so a large clip is streamed
+    from disk rather than loaded into memory — a packing clip runs at
+    roughly 30 MB a minute and the recorder is a small box."""
+
+    BLOCK = 256 * 1024
+
+    def __init__(self, fields, path: Path, *, filename: str, mime: str):
+        self.boundary = "----repaircam" + uuid.uuid4().hex
+        head = b"".join(
+            (
+                f"--{self.boundary}\r\n"
+                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode()
+            for name, value in fields
+        )
+        head += (
+            f"--{self.boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f"Content-Type: {mime}\r\n\r\n"
+        ).encode()
+        self._parts = [io.BytesIO(head), None, io.BytesIO(f"\r\n--{self.boundary}--\r\n".encode())]
+        self._path = path
+        self.length = len(head) + path.stat().st_size + len(self._parts[2].getvalue())
+        self._index = 0
+
+    @property
+    def content_type(self) -> str:
+        return f"multipart/form-data; boundary={self.boundary}"
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = self.BLOCK
+        while self._index < 3:
+            part = self._parts[self._index]
+            if part is None:
+                part = self._parts[1] = open(self._path, "rb")
+            chunk = part.read(size)
+            if chunk:
+                return chunk
+            if self._index == 1:
+                part.close()
+            self._index += 1
+        return b""
+
+    def close(self) -> None:
+        f = self._parts[1]
+        if f is not None and not f.closed:
+            f.close()
+
+
 # --------------------------------------------------------------------------
 # The client
 # --------------------------------------------------------------------------
@@ -325,6 +426,9 @@ class SaarSevaClient:
         #: the two change on entirely different schedules, and one number for
         #: both would re-fetch a camera list because a retention window moved.
         self.last_storage_revision: int | None = None
+        #: Approved disputed clips from the last /pack/active answer. Left
+        #: alone (not cleared) by a saar-seva too old to send the key.
+        self.last_clip_uploads: list[ClipUpload] = []
 
     # -- plumbing -----------------------------------------------------------
 
@@ -407,6 +511,8 @@ class SaarSevaClient:
             params["workcenters"] = ",".join(str(i) for i in sorted(set(workcenter_ids)))
         payload = self._request("GET", "/pack/active", params=params or None)
         self._note_revision(payload)
+        if isinstance(payload, dict) and "clip_uploads" in payload:
+            self.last_clip_uploads = parse_clip_uploads(payload)
         return parse_active_packing(payload)
 
     def post_packing_recording(self, recording: Recording) -> bool:
@@ -431,6 +537,62 @@ class SaarSevaClient:
             "recorded_at": recording.started_at,
         })
         return True
+
+    # -- sharing a disputed clip ---------------------------------------------
+
+    def request_clip_slot(self, upload_id: str, *, size_bytes: int, filename: str,
+                          mime: str = "video/mp4") -> dict:
+        """Ask saar-seva for a one-time Shopify upload slot for this file.
+
+        saar-seva holds the Shopify key and this box never sees it: what comes
+        back is a signed form that accepts exactly one file of exactly this
+        size, for about an hour.
+        """
+        payload = self._request(
+            "POST", f"/pack/clip-uploads/{urllib.parse.quote(upload_id)}/slot",
+            body={"size_bytes": int(size_bytes), "filename": filename, "mime": mime},
+        )
+        if not isinstance(payload, dict) or not payload.get("url"):
+            raise SaarSevaError("the upload slot came back empty")
+        return payload
+
+    def upload_to_slot(self, slot: dict, path: Path, *, filename: str,
+                       mime: str = "video/mp4") -> None:
+        """POST the clip to the slot, streamed from disk. Raises SaarSevaError."""
+        fields = [(p.get("name", ""), p.get("value", "")) for p in slot.get("parameters") or []]
+        body = _MultipartFile(fields, path, filename=filename, mime=mime)
+        request = urllib.request.Request(slot["url"], data=body, method="POST")
+        request.add_header("Content-Type", body.content_type)
+        request.add_header("Content-Length", str(body.length))
+        try:
+            with self._opener(request, timeout=self.config.upload_timeout_seconds) as response:
+                response.read()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            raise SaarSevaError(f"the upload was refused: HTTP {exc.code} {detail}".strip(),
+                                status=exc.code) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise SaarSevaError(f"the upload did not finish: {exc}") from exc
+        finally:
+            body.close()
+
+    def confirm_clip_upload(self, upload_id: str) -> dict:
+        """Tell saar-seva the bytes are on Shopify, so it can publish them."""
+        return self._request(
+            "POST", f"/pack/clip-uploads/{urllib.parse.quote(upload_id)}/done", body={}
+        ) or {}
+
+    def report_clip_failed(self, upload_id: str, reason: str, *, missing: bool = False) -> None:
+        """Say why a clip could not be shared. ``missing`` is final — the file
+        is not on this box — and saar-seva stops asking for it."""
+        self._request(
+            "POST", f"/pack/clip-uploads/{urllib.parse.quote(upload_id)}/failed",
+            body={"reason": reason[:900], "missing": bool(missing)},
+        )
 
     def post_recording(self, recording: Recording, *, operation: ActiveOperation | None = None) -> bool:
         """Hand a finished clip's link to saar-seva for the Odoo MO chatter.
