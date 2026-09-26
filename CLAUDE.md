@@ -20,6 +20,13 @@ the job (MO/operation/device/IMEI) and gets a sidecar JSON so the dataset is sel
   `ffmpeg -c copy` (no re-encode). **1 Work Center = 1 bench = 1 camera.**
 - **Capture-agnostic:** app talks only to a `CaptureBackend` interface (RTSP now, Pi-cam later).
 - **Storage = local** (SSD → archive HDD → NAS). Cloud/Odoo only ever hold a **link**, never video.
+  **One exception (owner's decision, 26 Sep 2026):** a clip a reseller DISPUTES — the
+  parcel-opening or packing video — is uploaded to Shopify once a person at SAAR approves it,
+  one clip at a time, and shown on that reseller's ticket for 30 days (`clipshare.py`). The
+  request rides the `/pack/active` poll as `clip_uploads`; the box gets a one-time Shopify
+  slot from saar-seva and never holds the Shopify key; the clip is marked **keep** first so
+  retention can never delete disputed evidence; `share_disputed_clips: false` in
+  saarseva.yaml switches it off at the shop whatever saar-seva asks. Nothing else leaves.
 - **Cameras are never internet-exposed;** only the LAN recorder (RepairCam) talks to them.
 
 ## Integration with the existing stack

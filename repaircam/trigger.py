@@ -21,6 +21,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import camerasync, storagesync
+from .clipshare import ClipSharer
 from . import config as camera_config
 from .catalogue import Catalogue, Recording, utcnow
 from .recorder import RecorderError, RecorderPool, State
@@ -110,6 +111,12 @@ class Trigger:
         #: the change would sit unread for up to ten minutes and the status
         #: page would show settings nobody had asked for any more.
         self.storage_worker = storage_worker
+        #: Uploads a disputed clip when SAAR approves sharing it. Off when the
+        #: shop has set ``share_disputed_clips: false`` in saarseva.yaml.
+        self.clip_sharer = ClipSharer(
+            self.catalogue, client,
+            enabled=bool(getattr(self.config, "share_disputed_clips", True)),
+        )
 
         # Benches this trigger started, and which operation each is recording.
         # Only these are ever stopped automatically — see _is_ours.
@@ -238,6 +245,7 @@ class Trigger:
         self._sync_storage(result)
 
         self._post_pending_links(result)
+        self._share_clips()
         # After reconciling, so what is reported is the state the benches are
         # actually in. Not sent when the poll failed: saar-seva is the same
         # server, and its screen going "unknown" is the honest answer when
@@ -247,6 +255,24 @@ class Trigger:
         if result.changed:
             log.info("trigger: %s", result.summary())
         return result
+
+    def _share_clips(self) -> None:
+        """Hand any approved disputed clips to the background uploader.
+
+        Consumed once per poll — the list is cleared after it is read, so a
+        poll that fails next time cannot replay an old request. Never raises:
+        this is the least important thing the tick does.
+        """
+        uploads = list(getattr(self.client, "last_clip_uploads", None) or [])
+        if not uploads:
+            return
+        self.client.last_clip_uploads = []
+        try:
+            started = self.clip_sharer.offer(uploads)
+            if started:
+                log.info("sharing %s disputed clip(s)", started)
+        except Exception:  # noqa: BLE001
+            log.exception("could not start sharing disputed clips")
 
     def _fetch_all(self) -> list[ActiveOperation]:
         """What saar-seva says is being recorded, across both integrations.

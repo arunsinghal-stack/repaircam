@@ -60,6 +60,12 @@ file. Ten benches × 8 hours × ~1.8 GB/hour is roughly 145 GB a day — nothing
 wants to pay to upload or store in a cloud, and it would leak customer devices and
 faces off-site. Path: SSD (working) → archive HDD → NAS.
 
+**The one exception** (decided 26 Sep 2026): a single clip a reseller disputes, once
+somebody at SAAR approves sharing it, is uploaded to Shopify and shown on that
+reseller's ticket for 30 days. It is the opposite of the volume argument above — one
+approved file, not a stream — and the shop can switch it off (`share_disputed_clips`).
+See `repaircam/clipshare.py`.
+
 ### Cameras never touch the internet
 The cameras sit on the shop LAN with no port forwarding, no cloud account, no UPnP.
 Only the recorder talks to them. The web UI is on the LAN too and has **no login** —

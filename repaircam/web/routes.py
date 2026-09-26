@@ -20,7 +20,7 @@ from flask import (
     url_for,
 )
 
-from .. import __version__, config, ffmpeg, recovery, saarseva, storage
+from .. import __version__, clipfile, config, ffmpeg, recovery, saarseva, storage
 from ..backends import CaptureError, build_backend
 from ..catalogue import Catalogue, JobLabels, read_sidecar
 from ..config import ConfigError
@@ -58,50 +58,24 @@ def labels_from_form(form) -> JobLabels:
 
 
 def _under(path: Path, root: Path) -> bool:
-    """Is ``path`` inside ``root``?
-
-    A corrupted or hand-edited row must not be able to talk the server into
-    serving /etc/passwd. Path.is_relative_to() would read better but is Python
-    3.9+, and the shop recorder runs 3.8 — relative_to() raising ValueError is
-    the same test and works everywhere.
-    """
-    try:
-        path.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    """Is ``path`` inside ``root``? (See clipfile.under.)"""
+    return clipfile.under(path, root)
 
 
 def resolve_clip(recording) -> Path | None:
     """Where this clip can actually be read from, or None if nowhere.
 
-    Two places, in order. The recorder's own copy, and — once retention has
-    removed that — the archive. Without the second, the first prune would turn
-    every older link in the Odoo chatter into a dead end, for footage still
-    sitting on the archive disk. Nobody would find that until they went looking
-    for an old repair, which is the one moment retention exists to serve.
-
-    Both are checked against a permitted root, and the archive one against the
-    archive configured *now*: a path recorded when archive_dir pointed somewhere
-    else is not something to start serving files from.
+    The recorder's own copy, then the archive — ``clipfile.find_clip``, the
+    one implementation, shared with the clip sharer so the page that plays a
+    clip and the job that uploads it can never disagree about whether it
+    still exists. Without the archive half, the first prune would turn every
+    older link in the Odoo chatter into a dead end, for footage still sitting
+    on the archive disk.
     """
-    root = config.data_dir()
-    local = (root / recording.path).resolve()
-    if not _under(local, root):
+    try:
+        return clipfile.find_clip(recording)
+    except clipfile.OutsideDataDir:
         abort(400, "recording path is outside the data directory")
-    if storage.reachable(local):
-        return local
-
-    archived = getattr(recording, "archive_path", "")
-    if archived:
-        allowed = storage.load_config().archive_path
-        candidate = Path(archived).resolve()
-        # storage.reachable, not Path.exists: an unplugged on-demand mount
-        # raises rather than returning False, and a clip page must say "the
-        # archive is not readable" rather than return a 500.
-        if allowed and _under(candidate, allowed.resolve()) and storage.reachable(candidate):
-            return candidate
-    return None
 
 
 def clip_path(recording) -> Path:
